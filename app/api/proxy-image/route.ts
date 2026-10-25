@@ -1,0 +1,98 @@
+const ALLOWED_HOSTS = new Set(['images.unsplash.com']);
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_REDIRECTS = 3;
+const CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'X-Content-Type-Options': 'nosniff',
+};
+
+function proxyError(message: string, status: number): Response {
+    return new Response(message, {
+        status,
+        headers: CORS_HEADERS,
+    });
+}
+
+function isAllowedImageUrl(value: string): boolean {
+    try {
+        const url = new URL(value);
+        const isPollinationsHost =
+            url.hostname === 'pollinations.ai' || url.hostname.endsWith('.pollinations.ai');
+        return (
+            url.protocol === 'https:' &&
+            !url.username &&
+            !url.password &&
+            (url.port === '' || url.port === '443') &&
+            (ALLOWED_HOSTS.has(url.hostname) || isPollinationsHost)
+        );
+    } catch {
+        return false;
+    }
+}
+
+export async function GET(request: Request) {
+    const requestUrl = new URL(request.url);
+    let targetUrl = requestUrl.searchParams.get('url');
+    if (!targetUrl || !isAllowedImageUrl(targetUrl)) {
+        return proxyError('Unsupported image URL', 400);
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25_000);
+
+    try {
+        let upstream: Response | undefined;
+        for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+            upstream = await fetch(targetUrl, {
+                cache: 'no-store',
+                redirect: 'manual',
+                signal: controller.signal,
+                headers: { Accept: 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8' },
+            });
+
+            if (![301, 302, 303, 307, 308].includes(upstream.status)) break;
+
+            const location = upstream.headers.get('location');
+            if (!location || redirects === MAX_REDIRECTS) {
+                return proxyError('Image redirect could not be followed', 502);
+            }
+            targetUrl = new URL(location, targetUrl).toString();
+            if (!isAllowedImageUrl(targetUrl)) {
+                return proxyError('Image redirect destination is not allowed', 502);
+            }
+        }
+
+        if (!upstream?.ok) {
+            return proxyError('Image provider request failed', 502);
+        }
+
+        const contentType = upstream.headers.get('content-type')?.split(';', 1)[0].trim() ?? '';
+        if (!['image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp'].includes(contentType)) {
+            return proxyError('Image provider returned a non-image response', 502);
+        }
+
+        const declaredLength = Number(upstream.headers.get('content-length'));
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_IMAGE_BYTES) {
+            return proxyError('Image is too large', 413);
+        }
+
+        const image = await upstream.arrayBuffer();
+        if (image.byteLength > MAX_IMAGE_BYTES) {
+            return proxyError('Image is too large', 413);
+        }
+
+        return new Response(image, {
+            headers: {
+                ...CORS_HEADERS,
+                'Content-Type': contentType,
+                'Content-Length': String(image.byteLength),
+                'Cache-Control': 'public, max-age=86400',
+            },
+        });
+    } catch (error) {
+        console.error('Image proxy request failed:', error);
+        return proxyError('Could not retrieve image', 502);
+    } finally {
+        clearTimeout(timeout);
+    }
+}
