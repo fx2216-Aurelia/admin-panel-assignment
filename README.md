@@ -34,3 +34,10 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Project Documentation
+
+### How I solved the middleware/locking issue:
+I encountered an infinite redirect loop when setting up the admin panel. The root cause was that my middleware was applying authentication checks too broadly, including to the login page itself, which prevented users from ever reaching the login screen.
+
+I solved this by refining the `matcher` configuration in `middleware.ts`. I explicitly excluded static files (`_next/static`, `_next/image`, `favicon.ico`) and public assets from the middleware's logic. This ensures that the authentication redirect only triggers for protected routes, effectively stopping the loop and allowing the login page to load properly.
