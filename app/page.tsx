@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import type { User } from '@supabase/supabase-js';
 import { createClient } from '@/lib/client';
 import { castVote } from '@/app/actions/vote';
@@ -1091,6 +1092,14 @@ export default function Home() {
                             <span className="text-sm text-stone-600 dark:text-stone-400">
                                 {currentUser.email}
                             </span>
+                            {currentUser.email === 'fx2216@columbia.edu' && (
+                                <Link
+                                    href="/admin"
+                                    className="rounded-lg bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-800 transition-colors hover:bg-emerald-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+                                >
+                                    Admin Panel
+                                </Link>
+                            )}
                             <SignOutButton />
                         </div>
                     ) : (
