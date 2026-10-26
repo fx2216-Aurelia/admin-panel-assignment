@@ -2,8 +2,10 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
-    let supabaseResponse = NextResponse.next({
-        request,
+    let response = NextResponse.next({
+        request: {
+            headers: request.headers,
+        },
     })
 
     const supabase = createServerClient(
@@ -15,33 +17,30 @@ export async function middleware(request: NextRequest) {
                     return request.cookies.getAll()
                 },
                 setAll(cookiesToSet) {
-                    cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
-                    supabaseResponse = NextResponse.next({
+                    cookiesToSet.forEach(({ name, value, options }) =>
+                        request.cookies.set(name, value)
+                    )
+                    response = NextResponse.next({
                         request,
                     })
                     cookiesToSet.forEach(({ name, value, options }) =>
-                        supabaseResponse.cookies.set(name, value, options)
+                        response.cookies.set(name, value, options)
                     )
                 },
             },
         }
     )
 
-    // Refresh the session to prevent the signed-in state from expiring.
-    await supabase.auth.getUser()
+    // 1. 获取 session
+    const { data: { session } } = await supabase.auth.getSession()
 
-    return supabaseResponse
-}
+    // 2. 你的保护逻辑
+    if (request.nextUrl.pathname.startsWith('/admin')) {
+        if (!session) {
+            // 如果没登录，踢回 /login
+            return NextResponse.redirect(new URL('/login', request.url))
+        }
+    }
 
-export const config = {
-    matcher: [
-        /*
-         * Match all request paths except:
-         * - _next/static (static files)
-         * - _next/image (optimized images)
-         * - favicon.ico
-         * - Common image formats (.svg, .png, .jpg, etc.)
-         */
-        '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-    ],
+    return response
 }
