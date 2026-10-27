@@ -1,107 +1,96 @@
-import { createClient } from '@/utils/supabase/server'
-import { redirect } from 'next/navigation'
-import { revalidatePath } from 'next/cache'
+import { createClient } from '@/utils/supabase/server';
+import { redirect } from 'next/navigation';
+import AdminMediaManagement from './AdminMediaManagement';
+
+interface Profile {
+    id: string;
+    email: string | null;
+    is_superadmin: boolean | null;
+}
 
 export default async function AdminPage() {
-    const supabase = await createClient()
+    const supabase = await createClient();
+    const {
+        data: { user },
+    } = await supabase.auth.getUser();
 
-    // 1. 验证用户及权限
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) redirect('/login')
+    if (!user) redirect('/login');
 
-    const { data: profile } = await supabase
+    const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('is_superadmin')
         .eq('id', user.id)
-        .single()
+        .single();
+
+    if (profileError) {
+        throw new Error(`Could not verify admin access: ${profileError.message}`);
+    }
 
     if (!profile?.is_superadmin) {
-        return <div className="p-8 text-red-500 text-center">Access Denied (403 Forbidden)</div>
+        return (
+            <main className="mx-auto max-w-3xl p-8 text-center">
+                <h1 className="text-2xl font-semibold text-stone-900">Access denied</h1>
+                <p className="mt-2 text-sm text-stone-600">You do not have permission to access the Admin Panel.</p>
+            </main>
+        );
     }
 
-    // 2. Server Actions (CRUD)
-    async function createGeneration(formData: FormData) {
-        'use server'
-        const prompt = formData.get('prompt') as string
-        const supabase = await createClient()
-        await supabase.from('generations').insert([{ prompt: prompt, upvotes: 0, downvotes: 0 }])
-        revalidatePath('/admin')
-    }
+    const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, email, is_superadmin')
+        .order('email', { ascending: true });
 
-    async function updateGeneration(formData: FormData) {
-        'use server'
-        const id = formData.get('id')
-        const prompt = formData.get('prompt') as string
-        const supabase = await createClient()
-        await supabase.from('generations').update({ prompt: prompt }).eq('id', id)
-        revalidatePath('/admin')
+    if (profilesError) {
+        throw new Error(`Could not load admin user list: ${profilesError.message}`);
     }
-
-    async function deleteGeneration(formData: FormData) {
-        'use server'
-        const id = formData.get('id')
-        const supabase = await createClient()
-        await supabase.from('generations').delete().eq('id', id)
-        revalidatePath('/admin')
-    }
-
-    // 3. 获取数据
-    const { data: profiles } = await supabase.from('profiles').select('id, email, is_superadmin')
-    const { data: generations } = await supabase.from('generations').select('*')
 
     return (
-        <div className="p-8 max-w-5xl mx-auto">
-            <nav className="flex justify-between items-center mb-8 border-b pb-4">
-                <h1 className="text-3xl font-bold">Admin Panel</h1>
-                <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm">Welcome, Admin</span>
-            </nav>
+        <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+            <header className="mb-8 flex flex-wrap items-center justify-between gap-4 border-b border-stone-200 pb-6">
+                <div>
+                    <p className="text-sm font-semibold uppercase tracking-[0.16em] text-emerald-700">Morningside Vent Feed</p>
+                    <h1 className="mt-1 font-serif text-3xl font-semibold text-stone-900">Admin Panel</h1>
+                </div>
+                <span className="rounded-full bg-emerald-100 px-4 py-2 text-sm font-semibold text-emerald-800">
+                    Welcome, Admin
+                </span>
+            </header>
 
-            {/* 用户管理表 */}
-            <section className="mb-12">
-                <h2 className="text-xl font-semibold mb-4">User Management</h2>
-                <table className="w-full border-collapse border border-gray-300 text-sm">
-                    <thead className="bg-gray-100">
-                    <tr><th className="border p-2 text-left">Email</th><th className="border p-2 text-left">Role</th></tr>
-                    </thead>
-                    <tbody>
-                    {profiles?.map((p: any) => (
-                        <tr key={p.id}><td className="border p-2">{p.email}</td><td className="border p-2">{p.is_superadmin ? 'Admin' : 'User'}</td></tr>
-                    ))}
-                    </tbody>
-                </table>
-            </section>
+            <AdminMediaManagement userId={user.id} />
 
-            {/* AI Media 管理 (CREATE / READ / UPDATE / DELETE) */}
-            <section>
-                <h2 className="text-xl font-semibold mb-4">AI Media Management</h2>
-
-                {/* CREATE 表单 */}
-                <form action={createGeneration} className="mb-6 p-4 bg-gray-50 rounded border flex gap-2">
-                    <input name="prompt" placeholder="New media prompt..." required className="flex-grow p-2 border rounded" />
-                    <button className="bg-green-600 text-white px-4 py-2 rounded">Create New</button>
-                </form>
-
-                <div className="grid gap-4">
-                    {generations?.map((gen: any) => (
-                        <form key={gen.id} className="border p-4 rounded-lg shadow-sm flex items-center justify-between bg-white gap-4">
-                            <input type="hidden" name="id" value={gen.id} />
-
-                            {/* UPDATE 输入框 */}
-                            <input name="prompt" defaultValue={gen.prompt} className="flex-grow p-2 border rounded" />
-
-                            <div className="flex gap-2 text-sm">
-                                <span className="text-green-600">👍{gen.upvotes || 0}</span>
-                                <span className="text-red-600">👎{gen.downvotes || 0}</span>
-                            </div>
-
-                            <div className="flex gap-2">
-                                <button formAction={updateGeneration} className="bg-blue-500 text-white px-4 py-2 rounded text-sm hover:bg-blue-600">Update</button>
-                                <button formAction={deleteGeneration} className="bg-red-500 text-white px-4 py-2 rounded text-sm hover:bg-red-600">Delete</button>
-                            </div>
-                        </form>
-                    ))}
+            <section className="mt-12" aria-labelledby="user-management-heading">
+                <div className="mb-4">
+                    <h2 id="user-management-heading" className="font-serif text-2xl font-semibold text-stone-900">
+                        User Management
+                    </h2>
+                    <p className="mt-1 text-sm text-stone-600">Accounts and Admin Panel access.</p>
+                </div>
+                <div className="overflow-x-auto rounded-2xl border border-stone-200 bg-white shadow-sm">
+                    <table className="w-full min-w-[28rem] text-left text-sm">
+                        <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-600">
+                            <tr>
+                                <th scope="col" className="px-5 py-3">Email</th>
+                                <th scope="col" className="px-5 py-3">Role</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-stone-100">
+                            {((profiles ?? []) as Profile[]).map((listedProfile) => (
+                                <tr key={listedProfile.id}>
+                                    <td className="px-5 py-3 text-stone-800">{listedProfile.email ?? 'No email'}</td>
+                                    <td className="px-5 py-3">
+                                        <span className={listedProfile.is_superadmin
+                                            ? 'rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800'
+                                            : 'rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-700'}
+                                        >
+                                            {listedProfile.is_superadmin ? 'Admin' : 'User'}
+                                        </span>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
                 </div>
             </section>
-        </div>
-    )
+        </main>
+    );
 }
