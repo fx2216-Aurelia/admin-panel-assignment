@@ -40,6 +40,44 @@ input[list]::-webkit-calendar-picker-indicator {
   }
 }
 
+@keyframes heart-glow {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.15);
+  }
+}
+
+.admin-heart-float {
+  animation: float 3.2s ease-in-out infinite;
+}
+
+.admin-heart-float:nth-of-type(2) {
+  animation-delay: 0.35s;
+}
+
+.admin-heart-float:nth-of-type(3) {
+  animation-delay: 0.7s;
+}
+
+.admin-heart-glow {
+  animation: heart-glow 2.8s ease-in-out infinite;
+}
+
+.admin-heart-cluster:hover .admin-heart-float {
+  animation-duration: 1.2s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-heart-float,
+  .admin-heart-glow {
+    animation: none;
+  }
+}
+
 @keyframes mascot-bounce {
   0%, 100% {
     transform: scale(1);

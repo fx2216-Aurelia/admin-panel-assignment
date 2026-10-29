@@ -245,17 +245,17 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
         <section aria-labelledby="media-management-heading">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
                 <div>
-                    <h2 id="media-management-heading" className="font-serif text-2xl font-semibold text-stone-900">
+                    <h2 id="media-management-heading" className="font-serif text-2xl font-semibold text-slate-800">
                         Polaroid &amp; Vent Management
                     </h2>
-                    <p className="mt-1 text-sm text-stone-600">
+                    <p className="mt-1 text-sm text-slate-600">
                         Manage community posts and review the support they receive.
                     </p>
                 </div>
                 <button
                     type="button"
                     onClick={openCreateModal}
-                    className="rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+                    className="rounded-xl bg-[#e2959c] px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-[#d7828a] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d7828a]"
                 >
                     Publish official Polaroid
                 </button>
@@ -268,12 +268,12 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
             </div>
 
             {notice && (
-                <p role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                <p role="status" className="mb-4 rounded-xl border border-[#e8ede9] bg-[#f4f7f4] px-4 py-3 text-sm text-[#385e49]">
                     {notice}
                 </p>
             )}
             {loadError && (
-                <div role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+                <div role="alert" className="mb-4 rounded-xl border border-[#f2d8dc] bg-[#fbf0f1] px-4 py-3 text-sm text-[#9f4f59]">
                     <p>Media management failed: {loadError}</p>
                     <button type="button" onClick={() => void loadPosts()} className="mt-2 font-semibold underline">
                         Retry loading
@@ -281,9 +281,9 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
                 </div>
             )}
 
-            <div className="overflow-x-auto rounded-2xl border border-stone-200 bg-white shadow-sm">
+            <div className="overflow-x-auto rounded-2xl border border-[#d7ded6] bg-white shadow-[0_4px_20px_-4px_rgba(40,60,50,0.06)]">
                 <table className="w-full min-w-[1050px] text-left text-sm">
-                    <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-600">
+                    <thead className="border-b border-[#d4ded4] bg-[#ebf0eb] text-xs font-semibold uppercase tracking-wide text-[#3e5649]">
                         <tr>
                             <th scope="col" className="px-4 py-3">Polaroid Preview / Media</th>
                             <th scope="col" className="px-4 py-3">Vent Text &amp; AI Coping Response</th>
@@ -294,43 +294,43 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
                             <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-stone-100">
+                    <tbody className="divide-y divide-[#e9eee9]">
                         {loading ? (
-                            <tr><td colSpan={7} className="px-4 py-12 text-center text-stone-500">Loading Polaroids and interactions…</td></tr>
+                            <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-500">Loading Polaroids and interactions…</td></tr>
                         ) : posts.length === 0 ? (
-                            <tr><td colSpan={7} className="px-4 py-12 text-center text-stone-500">No posts have been published yet.</td></tr>
+                            <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-500">No posts have been published yet.</td></tr>
                         ) : posts.map((post) => {
                             const content = getMediaContent(post.output_text);
                             const mediaUrl = getImageUrl(post, content);
                             return (
-                                <tr key={post.id} className="align-top">
+                                <tr key={post.id} className="align-top border-b border-[#e9eee9] transition-colors hover:bg-[#fafbfa]">
                                     <td className="px-4 py-4">
                                         {mediaUrl ? (
                                             <a href={mediaUrl} target="_blank" rel="noreferrer" aria-label="Open Polaroid media in a new tab">
                                                 <img
                                                     src={mediaUrl}
                                                     alt="Polaroid preview"
-                                                    className="h-20 w-28 rounded-lg border border-stone-200 object-cover"
+                                                    className="h-20 w-28 rounded-lg border border-[#d7ded6] object-cover"
                                                 />
                                             </a>
                                         ) : (
-                                            <div className="flex h-20 w-28 items-center justify-center rounded-lg border border-dashed border-stone-300 bg-stone-50 text-xs text-stone-500">
+                                            <div className="flex h-20 w-28 items-center justify-center rounded-lg border border-dashed border-[#d7ded6] bg-[#f4f7f4] text-xs text-slate-400">
                                                 No image
                                             </div>
                                         )}
                                     </td>
                                     <td className="max-w-md px-4 py-4">
-                                        <p className="font-semibold leading-5 text-stone-900">{post.prompt}</p>
-                                        <p className="mt-2 line-clamp-4 whitespace-pre-wrap text-xs leading-5 text-stone-600">
+                                        <p className="font-semibold leading-5 text-slate-800">{post.prompt}</p>
+                                        <p className="mt-2 line-clamp-4 whitespace-pre-wrap text-xs leading-5 text-slate-600">
                                             {typeof content.analysis === 'string' ? content.analysis : 'No coping response'}
                                         </p>
                                     </td>
-                                    <td className="px-4 py-4 font-semibold text-emerald-800">{post.hug_count ?? 0}</td>
-                                    <td className="px-4 py-4 font-semibold text-amber-800">{post.coffee_count ?? 0}</td>
-                                    <td className="px-4 py-4 font-semibold text-sky-800">{commentCounts[post.id] ?? 0}</td>
+                                    <td className="px-4 py-4 font-semibold text-[#385e49]">{post.hug_count ?? 0}</td>
+                                    <td className="px-4 py-4 font-semibold text-[#b4656f]">{post.coffee_count ?? 0}</td>
+                                    <td className="px-4 py-4 font-semibold text-slate-700">{commentCounts[post.id] ?? 0}</td>
                                     <td className="px-4 py-4">
-                                        <p className="font-medium text-stone-800">{getAuthor(content, post.user_id)}</p>
-                                        <time dateTime={post.created_at} className="mt-1 block whitespace-nowrap text-xs text-stone-500">
+                                        <p className="font-medium text-slate-700">{getAuthor(content, post.user_id)}</p>
+                                        <time dateTime={post.created_at} className="mt-1 block whitespace-nowrap text-xs text-slate-400">
                                             {new Date(post.created_at).toLocaleString()}
                                         </time>
                                     </td>
@@ -339,7 +339,7 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
                                             <button
                                                 type="button"
                                                 onClick={() => openEditModal(post)}
-                                                className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-50"
+                                                className="rounded-lg bg-[#edf4f0] px-3 py-1.5 text-xs font-semibold text-[#3d614e] transition hover:bg-[#dfece3]"
                                             >
                                                 Edit
                                             </button>
@@ -347,7 +347,7 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
                                                 type="button"
                                                 onClick={() => void deletePost(post)}
                                                 disabled={deletingId === post.id}
-                                                className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                                                className="rounded-lg bg-[#fdf0f0] px-3 py-1.5 text-xs font-semibold text-[#b45353] transition hover:bg-[#fae2e2] disabled:opacity-50"
                                             >
                                                 {deletingId === post.id ? 'Deleting…' : 'Delete'}
                                             </button>
@@ -361,79 +361,79 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
             </div>
 
             {modalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-stone-950/50 p-4">
+                <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-900/30 p-4 backdrop-blur-sm">
                     <section
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="media-modal-heading"
-                        className="my-auto w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl sm:p-8"
+                        className="my-auto w-full max-w-2xl rounded-2xl border border-[#d7ded6] bg-white p-6 shadow-[0_4px_20px_-4px_rgba(40,60,50,0.12)] sm:p-8"
                     >
                         <div className="mb-6 flex items-start justify-between gap-4">
                             <div>
-                                <h3 id="media-modal-heading" className="font-serif text-2xl font-semibold text-stone-900">
+                                <h3 id="media-modal-heading" className="font-serif text-2xl font-semibold text-slate-800">
                                     {editingPost ? 'Edit Polaroid' : 'Publish an official Polaroid'}
                                 </h3>
-                                <p className="mt-1 text-sm text-stone-600">
+                                <p className="mt-1 text-sm text-slate-600">
                                     {editingPost ? 'Update its AI coping response or media.' : 'Add a vent, supportive response, and image to the feed.'}
                                 </p>
                             </div>
-                            <button type="button" onClick={closeModal} disabled={saving} aria-label="Close dialog" className="rounded-lg px-2 py-1 text-xl text-stone-500 hover:bg-stone-100">
+                            <button type="button" onClick={closeModal} disabled={saving} aria-label="Close dialog" className="rounded-lg px-2 py-1 text-xl text-slate-400 hover:bg-[#f4f7f4]">
                                 ×
                             </button>
                         </div>
 
                         <form onSubmit={savePost} className="space-y-5">
                             <label className="block">
-                                <span className="mb-1.5 block text-sm font-semibold text-stone-800">User vent text</span>
+                                <span className="mb-1.5 block text-sm font-semibold text-slate-700">User vent text</span>
                                 <textarea
                                     value={ventText}
                                     onChange={(event) => setVentText(event.target.value)}
                                     readOnly={Boolean(editingPost)}
                                     required
                                     rows={3}
-                                    className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm text-stone-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 read-only:bg-stone-50"
+                                    className="w-full rounded-xl border border-[#cfd7cf] bg-[#fcfdfc] px-3 py-2.5 text-sm text-[#2c3e35] placeholder:text-[#9ea8a0] outline-none focus:border-[#6b8f78] focus:bg-white focus:ring-2 focus:ring-[#6b8f78]/20 read-only:bg-[#f4f7f4]"
                                 />
                             </label>
                             <label className="block">
-                                <span className="mb-1.5 block text-sm font-semibold text-stone-800">AI coping message</span>
+                                <span className="mb-1.5 block text-sm font-semibold text-slate-700">AI coping message</span>
                                 <textarea
                                     value={copingResponse}
                                     onChange={(event) => setCopingResponse(event.target.value)}
                                     required
                                     rows={5}
-                                    className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm text-stone-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                                    className="w-full rounded-xl border border-[#cfd7cf] bg-[#fcfdfc] px-3 py-2.5 text-sm text-[#2c3e35] placeholder:text-[#9ea8a0] outline-none focus:border-[#6b8f78] focus:bg-white focus:ring-2 focus:ring-[#6b8f78]/20"
                                 />
                             </label>
                             <label className="block">
-                                <span className="mb-1.5 block text-sm font-semibold text-stone-800">Image URL</span>
+                                <span className="mb-1.5 block text-sm font-semibold text-slate-700">Image URL</span>
                                 <input
                                     type="url"
                                     value={imageUrl}
                                     onChange={(event) => setImageUrl(event.target.value)}
                                     required
                                     placeholder="https://example.com/polaroid.jpg"
-                                    className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm text-stone-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                                    className="w-full rounded-xl border border-[#cfd7cf] bg-[#fcfdfc] px-3 py-2.5 text-sm text-[#2c3e35] placeholder:text-[#9ea8a0] outline-none focus:border-[#6b8f78] focus:bg-white focus:ring-2 focus:ring-[#6b8f78]/20"
                                 />
                             </label>
 
                             {modalError && (
-                                <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+                                <p role="alert" className="rounded-xl border border-[#f2d8dc] bg-[#fbf0f1] px-4 py-3 text-sm text-[#9f4f59]">
                                     {modalError}
                                 </p>
                             )}
-                            <div className="flex justify-end gap-3 border-t border-stone-100 pt-5">
+                            <div className="flex justify-end gap-3 border-t border-[#e9eee9] pt-5">
                                 <button
                                     type="button"
                                     onClick={closeModal}
                                     disabled={saving}
-                                    className="rounded-xl border border-stone-300 px-4 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                                    className="rounded-xl border border-[#cfd7cf] px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-[#f4f7f4] disabled:opacity-50"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={saving}
-                                    className="rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+                                    className="rounded-xl bg-[#e2959c] px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-[#d7828a] disabled:opacity-50"
                                 >
                                     {saving ? 'Saving…' : editingPost ? 'Save changes' : 'Publish Polaroid'}
                                 </button>
@@ -448,10 +448,10 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
 
 function MetricCard({ label, value, detail }: { label: string; value: number; detail: string }) {
     return (
-        <article className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50 p-5 shadow-sm">
-            <p className="text-sm font-medium text-stone-600">{label}</p>
-            <p className="mt-2 font-serif text-3xl font-semibold tabular-nums text-stone-900">{value.toLocaleString()}</p>
-            <p className="mt-1 text-xs text-stone-500">{detail}</p>
+        <article className="rounded-2xl border border-[#d7ded6] bg-white p-5 shadow-[0_4px_20px_-4px_rgba(40,60,50,0.06)]">
+            <p className="text-sm font-medium text-slate-600">{label}</p>
+            <p className="mt-2 font-serif text-3xl font-semibold tabular-nums text-[#385e49]">{value.toLocaleString()}</p>
+            <p className="mt-1 text-xs text-slate-400">{detail}</p>
         </article>
     );
 }

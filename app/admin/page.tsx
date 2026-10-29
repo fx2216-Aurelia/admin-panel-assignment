@@ -1,12 +1,6 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
-import AdminMediaManagement from './AdminMediaManagement';
-
-interface Profile {
-    id: string;
-    email: string | null;
-    is_superadmin: boolean | null;
-}
+import AdminDashboardTabs, { type AdminProfile } from './components/AdminDashboardTabs';
 
 export default async function AdminPage() {
     const supabase = await createClient();
@@ -28,9 +22,9 @@ export default async function AdminPage() {
 
     if (!profile?.is_superadmin) {
         return (
-            <main className="mx-auto max-w-3xl p-8 text-center">
-                <h1 className="text-2xl font-semibold text-stone-900">Access denied</h1>
-                <p className="mt-2 text-sm text-stone-600">You do not have permission to access the Admin Panel.</p>
+            <main className="mx-auto max-w-3xl p-8 text-center text-slate-800">
+                <h1 className="text-2xl font-semibold">Access denied</h1>
+                <p className="mt-2 text-sm text-slate-600">You do not have permission to access the Admin Panel.</p>
             </main>
         );
     }
@@ -45,52 +39,38 @@ export default async function AdminPage() {
     }
 
     return (
-        <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-            <header className="mb-8 flex flex-wrap items-center justify-between gap-4 border-b border-stone-200 pb-6">
-                <div>
-                    <p className="text-sm font-semibold uppercase tracking-[0.16em] text-emerald-700">Morningside Vent Feed</p>
-                    <h1 className="mt-1 font-serif text-3xl font-semibold text-stone-900">Admin Panel</h1>
-                </div>
-                <span className="rounded-full bg-emerald-100 px-4 py-2 text-sm font-semibold text-emerald-800">
-                    Welcome, Admin
-                </span>
-            </header>
-
-            <AdminMediaManagement userId={user.id} />
-
-            <section className="mt-12" aria-labelledby="user-management-heading">
-                <div className="mb-4">
-                    <h2 id="user-management-heading" className="font-serif text-2xl font-semibold text-stone-900">
-                        User Management
-                    </h2>
-                    <p className="mt-1 text-sm text-stone-600">Accounts and Admin Panel access.</p>
-                </div>
-                <div className="overflow-x-auto rounded-2xl border border-stone-200 bg-white shadow-sm">
-                    <table className="w-full min-w-[28rem] text-left text-sm">
-                        <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-600">
-                            <tr>
-                                <th scope="col" className="px-5 py-3">Email</th>
-                                <th scope="col" className="px-5 py-3">Role</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-stone-100">
-                            {((profiles ?? []) as Profile[]).map((listedProfile) => (
-                                <tr key={listedProfile.id}>
-                                    <td className="px-5 py-3 text-stone-800">{listedProfile.email ?? 'No email'}</td>
-                                    <td className="px-5 py-3">
-                                        <span className={listedProfile.is_superadmin
-                                            ? 'rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800'
-                                            : 'rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-700'}
-                                        >
-                                            {listedProfile.is_superadmin ? 'Admin' : 'User'}
-                                        </span>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            </section>
+        <main className="min-h-screen bg-[#f5f4ef] px-4 py-8 text-slate-800 sm:px-6 lg:px-8">
+            <div className="mx-auto max-w-7xl">
+                <header className="mb-8 flex flex-wrap items-center justify-between gap-4 border-b border-[#d7ded6] pb-6">
+                    <div>
+                        <p className="inline-flex rounded-full border border-[#f2d8dc] bg-[#fbf0f1] px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-[#b4656f]">
+                            Morningside Vent Feed
+                        </p>
+                        <div className="mt-2 flex items-center gap-3">
+                            <h1 className="font-serif text-3xl font-semibold text-slate-800">Admin Dashboard</h1>
+                            <span
+                                aria-hidden="true"
+                                className="admin-heart-cluster relative inline-flex cursor-pointer items-center justify-center transition-transform duration-300 hover:scale-125"
+                            >
+                                <span className="admin-heart-glow absolute inset-0 rounded-full bg-[#f2d8dc]/60 blur-md" />
+                                <svg className="admin-heart-float relative -mr-1 size-4 fill-[#e2959c]" viewBox="0 0 24 24">
+                                    <path d="M12 21s-8.5-5.3-8.5-12A4.5 4.5 0 0 1 12 6.2 4.5 4.5 0 0 1 20.5 9c0 6.7-8.5 12-8.5 12Z" />
+                                </svg>
+                                <svg className="admin-heart-float relative z-10 size-5 fill-[#f3b2b8]" viewBox="0 0 24 24">
+                                    <path d="M12 21s-8.5-5.3-8.5-12A4.5 4.5 0 0 1 12 6.2 4.5 4.5 0 0 1 20.5 9c0 6.7-8.5 12-8.5 12Z" />
+                                </svg>
+                                <svg className="admin-heart-float relative -ml-1 size-3 fill-[#d7828a]" viewBox="0 0 24 24">
+                                    <path d="M12 21s-8.5-5.3-8.5-12A4.5 4.5 0 0 1 12 6.2 4.5 4.5 0 0 1 20.5 9c0 6.7-8.5 12-8.5 12Z" />
+                                </svg>
+                            </span>
+                        </div>
+                    </div>
+                    <span className="rounded-full border border-[#f2d8dc] bg-[#fbf0f1] px-4 py-2 text-sm font-semibold text-[#b4656f]">
+                        Superadmin
+                    </span>
+                </header>
+                <AdminDashboardTabs userId={user.id} profiles={(profiles ?? []) as AdminProfile[]} />
+            </div>
         </main>
     );
 }
