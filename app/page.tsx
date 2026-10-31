@@ -8,6 +8,7 @@ import { castVote } from '@/app/actions/vote';
 import GoogleSignInButton from '@/components/GoogleSignInButton';
 import SignOutButton from '@/components/SignOutButton';
 import StoicLoader from '@/components/StoicLoader';
+import AmbientSoundControl from '@/components/AmbientSoundControl';
 
 type ToneType = 'gentle' | 'roast';
 type FeedSort = 'latest' | 'highest-stress';
@@ -1107,6 +1108,8 @@ export default function Home() {
                     )}
                 </div>
             </header>
+
+            <AmbientSoundControl />
 
             <section className="mx-auto mb-10 max-w-3xl">
                 <div className="mb-7 px-1 text-center sm:mb-9">
