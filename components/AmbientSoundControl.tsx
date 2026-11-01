@@ -8,6 +8,7 @@ const PREFERENCES_KEY = 'meditations-ambient-sound';
 const SOUNDS: { id: AmbientSound; label: string }[] = [
     { id: 'rain', label: 'Rain' },
     { id: 'piano', label: 'Piano' },
+    { id: 'forest', label: 'forest' },
 ];
 
 function SpeakerIcon({ on }: { on: boolean }) {
@@ -36,7 +37,7 @@ export default function AmbientSoundControl() {
             if (!active) return;
             try {
                 const stored = JSON.parse(localStorage.getItem(PREFERENCES_KEY) || 'null');
-                if (stored?.sound === 'piano' || stored?.sound === 'rain') setSound(stored.sound);
+                if (stored?.sound === 'piano' || stored?.sound === 'rain' || stored?.sound === 'forest') setSound(stored.sound);
                 if (typeof stored?.volume === 'number' && Number.isFinite(stored.volume)) {
                     setVolume(Math.min(1, Math.max(0, stored.volume)));
                 }
@@ -85,7 +86,7 @@ export default function AmbientSoundControl() {
         <div
             role="group"
             aria-label="Background sound"
-            className="fixed bottom-5 right-5 z-40 flex items-center gap-0.5 rounded-full border border-stone-200/80 bg-white/80 p-1 text-xs shadow-sm backdrop-blur-md dark:border-stone-700/70 dark:bg-stone-900/80"
+            className="fixed bottom-5 right-3 z-40 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center justify-end gap-0.5 rounded-full border border-stone-200/80 bg-white/80 p-1 text-xs shadow-sm backdrop-blur-md sm:right-5 dark:border-stone-700/70 dark:bg-stone-900/80"
         >
             <button
                 type="button"
@@ -109,7 +110,7 @@ export default function AmbientSoundControl() {
                         type="button"
                         aria-pressed={active}
                         onClick={() => (active ? stop() : play(id))}
-                        className={`h-8 rounded-full px-3 font-medium tracking-wide transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
+                        className={`h-8 rounded-full px-2 font-medium tracking-wide transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 sm:px-3 ${
                             active
                                 ? 'bg-[#365B48] text-white dark:bg-emerald-200 dark:text-stone-900'
                                 : 'text-stone-500 hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-100'
@@ -127,11 +128,11 @@ export default function AmbientSoundControl() {
                     value={Math.round(volume * 100)}
                     onChange={(event) => changeVolume(Number(event.target.value) / 100)}
                     aria-label="Volume"
-                    className="mx-2 h-1 w-16 cursor-pointer accent-[#365B48] dark:accent-emerald-200"
+                    className="mx-2 h-1 w-12 cursor-pointer accent-[#365B48] sm:w-16 dark:accent-emerald-200"
                 />
             )}
             <span role="status" className="sr-only">
-                {unavailable ? 'Sound is unavailable in this browser.' : playing ? `${sound === 'rain' ? 'Rain' : 'Piano'} is playing.` : 'Sound is off.'}
+                {unavailable ? 'Sound is unavailable in this browser.' : playing ? `${SOUNDS.find(({ id }) => id === sound)?.label} is playing.` : 'Sound is off.'}
             </span>
         </div>
     );

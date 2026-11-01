@@ -1,4 +1,6 @@
-export type AmbientSound = 'piano' | 'rain';
+import { createForest } from './forestAudio';
+
+export type AmbientSound = 'piano' | 'rain' | 'forest';
 
 type Track = { stop: () => void };
 
@@ -139,7 +141,9 @@ export class AmbientPlayer {
         const { context, master } = this;
 
         this.track?.stop();
-        this.track = sound === 'rain' ? createRain(context, master) : createPiano(context, master);
+        this.track = sound === 'forest'
+            ? createForest(context, master)
+            : sound === 'rain' ? createRain(context, master) : createPiano(context, master);
         master.gain.cancelScheduledValues(context.currentTime);
         master.gain.setValueAtTime(0, context.currentTime);
         master.gain.setTargetAtTime(this.volume * MAX_GAIN, context.currentTime, 0.4);
