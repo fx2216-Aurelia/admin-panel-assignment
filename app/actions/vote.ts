@@ -2,7 +2,7 @@
 
 import { createClient } from '@/lib/server';
 
-type VoteType = 'hug' | 'coffee';
+type VoteType = 'hug';
 type VoteError = {
     message: string;
     code?: string;
@@ -25,6 +25,9 @@ function formatVoteError(error: {
 }
 
 export async function castVote(generationId: string, voteType: VoteType) {
+    if (voteType !== 'hug') {
+        return { success: false as const, error: { message: 'Please use the coffee offer form.' } };
+    }
     const supabase = await createClient();
 
     const {

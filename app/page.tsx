@@ -9,6 +9,10 @@ import GoogleSignInButton from '@/components/GoogleSignInButton';
 import SignOutButton from '@/components/SignOutButton';
 import StoicLoader from '@/components/StoicLoader';
 import AmbientSoundControl from '@/components/AmbientSoundControl';
+import CoffeeOfferDialog from '@/components/CoffeeOfferDialog';
+import CoffeeNotifications from '@/components/CoffeeNotifications';
+import { sendCoffeeOffer } from '@/app/actions/coffee';
+import type { CoffeePlatform } from '@/lib/coffee';
 
 type ToneType = 'gentle' | 'roast';
 type FeedSort = 'latest' | 'highest-stress';
@@ -342,6 +346,8 @@ export default function Home() {
     const [commentsLoading, setCommentsLoading] = useState<Record<string, boolean>>({});
     const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
     const [commentPosting, setCommentPosting] = useState<Record<string, boolean>>({});
+    const [coffeeTarget, setCoffeeTarget] = useState<string | null>(null);
+    const [notificationTarget, setNotificationTarget] = useState<string | null>(null);
     const reactionLocks = useRef(new Set<string>());
     const latestReflectionRef = useRef<HTMLElement>(null);
     const feedListRef = useRef<HTMLDivElement>(null);
@@ -808,7 +814,7 @@ export default function Home() {
         }
     };
 
-    const handleReaction = async (generationId: string, type: ReactionType) => {
+    const handleReaction = async (generationId: string, type: 'hug') => {
         if (!currentUser) {
             showToast('Please sign in to send a little support.');
             return;
@@ -842,9 +848,8 @@ export default function Home() {
         setReactions((previous) => ({
             ...previous,
             [stateKey]: {
-                hug: previous[stateKey]?.hug ?? false,
+                hug: !wasActive,
                 coffee: previous[stateKey]?.coffee ?? false,
-                [type]: !wasActive,
             },
         }));
         updateCount(delta);
@@ -861,9 +866,8 @@ export default function Home() {
             setReactions((previous) => ({
                 ...previous,
                 [stateKey]: {
-                    hug: previous[stateKey]?.hug ?? false,
+                    hug: wasActive,
                     coffee: previous[stateKey]?.coffee ?? false,
-                    [type]: wasActive,
                 },
             }));
             updateCount(-delta);
@@ -878,11 +882,7 @@ export default function Home() {
         }
     };
 
-    const toggleComments = async (generationId: string) => {
-        const opening = !openComments[generationId];
-        setOpenComments((previous) => ({ ...previous, [generationId]: opening }));
-        if (!opening || commentsByGeneration[generationId]) return;
-
+    const loadComments = async (generationId: string) => {
         setCommentsLoading((previous) => ({ ...previous, [generationId]: true }));
         try {
             const { data, error } = await supabase
@@ -902,6 +902,87 @@ export default function Home() {
             setCommentsLoading((previous) => ({ ...previous, [generationId]: false }));
         }
     };
+
+    const toggleComments = async (generationId: string) => {
+        const opening = !openComments[generationId];
+        setOpenComments((previous) => ({ ...previous, [generationId]: opening }));
+        if (opening) await loadComments(generationId);
+    };
+
+    const openCoffeeDialog = (generationId: string) => {
+        if (!currentUser) {
+            showToast('Please sign in to offer a coffee.');
+            return;
+        }
+        if (generations.find((post) => post.id === generationId)?.user_id === currentUser.id) {
+            showToast('Coffee offers are for supporting someone else’s post.');
+            return;
+        }
+        setCoffeeTarget(generationId);
+    };
+
+    const submitCoffeeOffer = async (platform: CoffeePlatform, account: string): Promise<string | null> => {
+        if (!coffeeTarget || !currentUser) return 'Please sign in again before sending your coffee offer.';
+        const generationId = coffeeTarget;
+        const userId = currentUser.id;
+        const result = await sendCoffeeOffer(generationId, platform, account);
+        if (!result.success) return result.error;
+        const stateKey = `${userId}:${generationId}`;
+        setReactions((previous) => ({
+            ...previous,
+            [stateKey]: { hug: previous[stateKey]?.hug ?? false, coffee: true },
+        }));
+        setReactionCounts((previous) => ({
+            ...previous,
+            [generationId]: { hug: previous[generationId]?.hug ?? 0, coffee: result.coffeeCount },
+        }));
+        setCommentsByGeneration((previous) => ({
+            ...previous,
+            [generationId]: [...(previous[generationId] ?? []).filter((comment) => comment.id !== result.comment.id), result.comment],
+        }));
+        if (!result.alreadySent) {
+            setCommentCounts((previous) => ({ ...previous, [generationId]: (previous[generationId] ?? 0) + 1 }));
+        }
+        setLocallyCommentedPosts((previous) => ({ ...previous, [generationId]: true }));
+        setOpenComments((previous) => ({ ...previous, [generationId]: true }));
+        try {
+            const { data, error } = await supabase.from('feed_comments')
+                .select('id, generation_id, content, created_at, author_name')
+                .eq('generation_id', generationId).order('created_at', { ascending: true });
+            if (!error && data) {
+                setCommentsByGeneration((previous) => ({ ...previous, [generationId]: data }));
+                setCommentCounts((previous) => ({ ...previous, [generationId]: data.length }));
+            }
+        } catch {
+            showToast('Your coffee offer is saved. Reopen comments to refresh other replies.');
+        }
+        showToast(result.alreadySent ? 'You already offered a coffee here. Your original comment is shown below.' : 'Coffee offered! Your contact is in the comments and the author has been notified.');
+        return null;
+    };
+
+    const openNotificationPost = (generationId: string) => {
+        const index = generations.findIndex((post) => post.id === generationId);
+        if (index === -1) {
+            showToast('This post is no longer available. Refresh the feed to check again.');
+            return;
+        }
+        setFeedTab('explore');
+        setFeedSort('latest');
+        setVisiblePostCount(Math.max(FEED_PAGE_SIZE, index + 1));
+        setNotificationTarget(generationId);
+        setOpenComments((previous) => ({ ...previous, [generationId]: true }));
+        void loadComments(generationId);
+    };
+
+    useEffect(() => {
+        if (!notificationTarget) return;
+        const frame = window.requestAnimationFrame(() => {
+            const post = document.getElementById(`feed-post-${notificationTarget}`);
+            post?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            post?.focus({ preventScroll: true });
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [notificationTarget, visiblePostCount, feedTab, feedSort]);
 
     const handlePostComment = async (targetId: string, commentText: string) => {
         const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1023,7 +1104,7 @@ export default function Home() {
                                             {relativeTime(comment.created_at)}
                                         </time>
                                     </div>
-                                    <p className="text-sm text-stone-700 dark:text-stone-200">{comment.content}</p>
+                                    <p className="break-words text-sm text-stone-700 dark:text-stone-200">{comment.content}</p>
                                 </div>
                             ))}
                             {commentsByGeneration[generationId]?.length === 0 && (
@@ -1101,6 +1182,7 @@ export default function Home() {
                                     Admin Panel
                                 </Link>
                             )}
+                            <CoffeeNotifications key={currentUser.id} userId={currentUser.id} onOpenPost={openNotificationPost} />
                             <SignOutButton />
                         </div>
                     ) : (
@@ -1109,6 +1191,13 @@ export default function Home() {
                 </div>
             </header>
 
+            {coffeeTarget && currentUser && (
+                <CoffeeOfferDialog
+                    key={coffeeTarget}
+                    onClose={() => setCoffeeTarget(null)}
+                    onSubmit={submitCoffeeOffer}
+                />
+            )}
             <AmbientSoundControl />
 
             <section className="mx-auto mb-10 max-w-3xl">
@@ -1801,11 +1890,12 @@ export default function Home() {
                             const hugCount = reactionCounts[item.id]?.hug ?? item.hug_count ?? 0;
                             const coffeeCount = reactionCounts[item.id]?.coffee ?? item.coffee_count ?? 0;
                             const hugPendingKey = `${currentUser?.id ?? 'anonymous'}:${item.id}:hug`;
-                            const coffeePendingKey = `${currentUser?.id ?? 'anonymous'}:${item.id}:coffee`;
 
                             return (
                                 <article
                                     key={item.id}
+                                    id={`feed-post-${item.id}`}
+                                    tabIndex={-1}
                                     className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm transition hover:shadow-md dark:border-stone-800 dark:bg-stone-900 sm:p-6"
                                 >
                                     <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -1942,10 +2032,9 @@ export default function Home() {
                                             </button>
                                             <button
                                                 type="button"
-                                                onClick={() => void handleReaction(item.id, 'coffee')}
-                                                disabled={pendingReactions[coffeePendingKey]}
-                                                aria-pressed={hasCoffeed}
-                                                title="Send a tactical coffee boost: You'll pull through tonight!"
+                                                onClick={() => openCoffeeDialog(item.id)}
+                                                aria-haspopup="dialog"
+                                                title="Offer a coffee and share your social media account"
                                                 className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:cursor-wait disabled:opacity-70 ${
                                                     hasCoffeed
                                                         ? 'border-amber-800 bg-amber-900 text-amber-50 ring-2 ring-amber-200 dark:border-amber-500 dark:bg-amber-950 dark:text-amber-100'
