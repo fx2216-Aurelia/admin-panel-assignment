@@ -1,0 +1,51 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const { PGlite } = require(process.env.PGLITE_MODULE || '@electric-sql/pglite');
+const root = path.resolve(__dirname, '..');
+(async () => {
+    const database = new PGlite();
+    await database.exec(`
+        create role anon;
+        create role authenticated;
+        create schema auth;
+        create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.user_id', true), '')::uuid $$;
+        grant usage on schema auth, public to authenticated;
+        grant execute on function auth.uid() to authenticated;
+        create table public.generations (id uuid primary key, user_id uuid, prompt text, output_text text, stress_level integer, tone_type text, stoic_quote text, created_at timestamptz, hug_count integer, coffee_count integer);
+        create table public.votes (generation_id uuid, user_id uuid);
+        grant select on public.generations, public.votes to authenticated;
+        alter table public.generations enable row level security;
+        create policy fixture_visibility on public.generations for select to authenticated using (user_id = auth.uid());
+    `);
+    const user = '11111111-1111-1111-1111-111111111111';
+    const other = '22222222-2222-2222-2222-222222222222';
+    const ids = [];
+    for (let index = 0; index < 25; index++) {
+        const id = `00000000-0000-0000-0000-${String(index + 1).padStart(12, '0')}`;
+        ids.push(id);
+        await database.query('insert into public.generations values ($1,$2,$3,$4,5,$5,$6,now() - $7::interval,0,0)', [id, index === 24 ? other : user, 'fixture', JSON.stringify({ analysis: 'hello', image_url: 'data:image/jpeg;base64,' + 'X'.repeat(200000), image_source: 'user_photo_lion', image_prompt: 'private prompt', lion_placement: { scene: 'Sensitive description' }, photo_sharing_consent: { accepted_at: 'date' } }), 'gentle', 'quote', `${index} hours`]);
+    }
+    await database.query('insert into public.votes values ($1, $2)', [ids[1], user]);
+    await database.exec(fs.readFileSync(path.join(root, 'supabase/migrations/20261102000000_photo_lion_feed.sql'), 'utf8'));
+    const permissions = await database.query("select prosecdef, has_function_privilege('anon', oid, 'EXECUTE') as anon_execute from pg_proc where proname = 'photo_lion_feed'");
+    assert.equal(permissions.rows[0].prosecdef, false); assert.equal(permissions.rows[0].anon_execute, false);
+    await database.exec(`set role authenticated; set request.user_id = '${user}';`);
+    const first = await database.query("select public.photo_lion_feed(0,11,'explore','latest') as post");
+    const second = await database.query("select public.photo_lion_feed(10,11,'mine','latest') as post");
+    assert.equal(first.rows.length, 11); assert.equal(second.rows.length, 11);
+    assert.equal(first.rows[0].post.id, ids[0]); assert.equal(second.rows[0].post.id, ids[10]);
+    const all = await database.query("select public.photo_lion_feed(0,11,'interacted','latest',$1::uuid[]) as post", [[ids[2], ids[24]]]);
+    assert.deepEqual(all.rows.map((row) => row.post.id), [ids[1], ids[2]]);
+    const json = JSON.stringify(first.rows);
+    assert.ok(json.length < 15000); assert.ok(!json.includes('base64')); assert.ok(!json.includes('Sensitive')); assert.ok(!json.includes('private prompt')); assert.ok(!json.includes('accepted_at'));
+    await assert.rejects(database.query("select public.photo_lion_feed(-1,11,'explore','latest')"));
+    await database.exec('reset role;');
+    await database.query('update public.generations set output_text=$1 where id=$2', ['broken ' + 'X'.repeat(200000), ids[0]]);
+    await database.exec(`set role authenticated;`);
+    const malformed = await database.query("select public.photo_lion_feed(0,1,'explore','latest') as post");
+    assert.ok(!JSON.stringify(malformed.rows).includes('broken'));
+    await database.close();
+    console.log('PASS local PostgreSQL/WASM migration: pagination, whitelist payload, malformed historical text, SECURITY INVOKER, anon denial, RLS, interacted ids');
+    console.log('LIMITATION: synthetic database schema/policies, not the owner Supabase project; migration NOT applied remotely.');
+})().catch((error) => { console.error(error); process.exitCode = 1; });

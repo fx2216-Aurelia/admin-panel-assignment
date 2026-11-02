@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createClient } from '@/lib/server';
+import { createPhotoLion, PhotoError } from '@/lib/photoLion';
 
 export const maxDuration = 60;
+export const runtime = 'nodejs';
 
 type GeneratedContent = {
     quote: {
@@ -264,7 +266,21 @@ export async function POST(req: Request) {
 
         let body: unknown;
         try {
-            body = await req.json();
+            const reader = req.body?.getReader();
+            if (!reader) return NextResponse.json({ error: 'Request body is required.' }, { status: 400 });
+            const chunks: Uint8Array[] = [];
+            let size = 0;
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                size += value.byteLength;
+                if (size > 1_600_000) {
+                    await reader.cancel();
+                    return NextResponse.json({ error: 'Request is too large. Please use a smaller photo.' }, { status: 413 });
+                }
+                chunks.push(value);
+            }
+            body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         } catch {
             return NextResponse.json({ error: 'Request body must be valid JSON.' }, { status: 400 });
         }
@@ -279,20 +295,24 @@ export async function POST(req: Request) {
             stress_level: stressLevel,
             tone: requestedTone,
             tone_type: storedTone,
+            photo_data_url: photoDataUrl,
+            photo_consent: photoConsent,
         } = body as {
             prompt?: unknown;
             location?: unknown;
             stress_level?: unknown;
             tone?: unknown;
             tone_type?: unknown;
+            photo_data_url?: unknown;
+            photo_consent?: unknown;
         };
         const toneType = requestedTone ?? storedTone;
 
-        if (typeof prompt !== 'string' || !prompt.trim()) {
+        if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 5000) {
             return NextResponse.json({ error: 'Prompt is required.' }, { status: 400 });
         }
 
-        if (location !== undefined && (typeof location !== 'string' || !location.trim())) {
+        if (location !== undefined && (typeof location !== 'string' || !location.trim() || location.length > 200)) {
             return NextResponse.json({ error: 'Location must be a non-empty string.' }, { status: 400 });
         }
 
@@ -308,6 +328,15 @@ export async function POST(req: Request) {
         if (toneType !== 'gentle' && toneType !== 'roast') {
             return NextResponse.json({ error: "Tone type must be 'gentle' or 'roast'." }, { status: 400 });
         }
+
+        const hasPhoto = photoDataUrl !== undefined && photoDataUrl !== null;
+        if (hasPhoto && photoConsent !== true) {
+            return NextResponse.json({ error: 'Please agree to photo scene analysis and community sharing before submitting.' }, { status: 400 });
+        }
+        if (hasPhoto && process.env.PHOTO_COMMUNITY_SHARING_ENABLED !== 'true') {
+            throw new PhotoError('Photo sharing is not enabled. The site owner must approve the community visibility before accepting photos. Please submit without a photo.', 503);
+        }
+        const photoResult = hasPhoto ? await createPhotoLion(photoDataUrl) : null;
 
         const toneInstructions =
             toneType === 'gentle'
@@ -357,7 +386,7 @@ ${JSON.stringify({ location: typeof location === 'string' ? location.trim() : 'N
                         model: candidate,
                         generationConfig: { responseMimeType: 'application/json', temperature: 0.75 },
                     });
-                    const result = await model.generateContent(personaPrompt);
+                    const result = await model.generateContent(personaPrompt, { timeout: photoResult ? 12_000 : 20_000 });
                     content = parseGeneratedContent(result.response.text());
                     if (!content) {
                         throw new Error(`Gemini model ${candidate} returned an invalid JSON response.`);
@@ -388,7 +417,7 @@ ${JSON.stringify({ location: typeof location === 'string' ? location.trim() : 'N
             'A Columbia student';
         const visualKeywords = extractVisualKeywords(prompt);
         const visualPrompt = `cute cozy storybook watercolor lo-fi illustration of ${visualKeywords}, warm pastel tones, Ghibli aesthetic, peaceful, no text`;
-        const imagePrompt = visualPrompt;
+        const imagePrompt = photoResult ? 'User photo with blue-shirt lion' : visualPrompt;
         const cleanPrompt = encodeURIComponent(
             visualPrompt,
         );
@@ -397,7 +426,10 @@ ${JSON.stringify({ location: typeof location === 'string' ? location.trim() : 'N
         let imageUrl: string;
         let base64Image: string;
         let imageFallback = false;
-        try {
+        if (photoResult) {
+            imageUrl = photoResult.image;
+            base64Image = photoResult.image;
+        } else try {
             base64Image = await fetchImageAsDataUrl(providerImageUrl);
             imageUrl = providerImageUrl;
         } catch (error) {
@@ -415,7 +447,11 @@ ${JSON.stringify({ location: typeof location === 'string' ? location.trim() : 'N
             coping_action: content.coping_action,
             scene_theme: content.scene_theme,
             image_prompt: imagePrompt,
-            image_url: imageFallback ? imageUrl : providerImageUrl,
+            image_url: photoResult ? photoResult.image : imageFallback ? imageUrl : providerImageUrl,
+            image_source: photoResult ? 'user_photo_lion' : 'ai_illustration',
+            lion_placement: photoResult?.placement,
+            photo_sharing_consent: photoResult ? { version: 1, accepted_at: new Date().toISOString() } : undefined,
+            photo_notice: photoResult?.notice,
             image_fallback: imageFallback,
             location: typeof location === 'string' ? location.trim() : 'Morningside',
             author_name: authorName,
@@ -458,10 +494,15 @@ ${JSON.stringify({ location: typeof location === 'string' ? location.trim() : 'N
             imageUrl: base64Image,
             base64Image,
             image_fallback: imageFallback,
-        });
+            image_source: photoResult ? 'user_photo_lion' : 'ai_illustration',
+            photo_notice: photoResult?.notice,
+        }, { headers: { 'Cache-Control': 'no-store' } });
     } catch (error) {
-        console.error("DEBUG Gemini error details:", error);
-        const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof PhotoError) {
+            return NextResponse.json({ error: error.message }, { status: error.status, headers: { 'Cache-Control': 'no-store' } });
+        }
+        console.error('Reflection generation failed.');
+        const message = 'Could not create your reflection. Please try again.';
         return NextResponse.json(
             { error: message },
             { status: 500 },

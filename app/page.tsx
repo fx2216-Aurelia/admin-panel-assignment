@@ -13,6 +13,7 @@ import CoffeeOfferDialog from '@/components/CoffeeOfferDialog';
 import CoffeeNotifications from '@/components/CoffeeNotifications';
 import { sendCoffeeOffer } from '@/app/actions/coffee';
 import type { CoffeePlatform } from '@/lib/coffee';
+import PhotoUpload, { type PreparedPhoto } from '@/components/PhotoUpload';
 
 type ToneType = 'gentle' | 'roast';
 type FeedSort = 'latest' | 'highest-stress';
@@ -41,6 +42,8 @@ interface Generation {
     imageUrl?: string;
     base64Image?: string;
     image_fallback?: boolean;
+    photo_notice?: string;
+    image_source?: 'user_photo_lion' | 'ai_illustration';
     imagePreloaded?: boolean;
     created_at: string;
     hug_count?: number | null;
@@ -69,6 +72,7 @@ interface JournalContent {
     scene_theme?: string;
     image_prompt?: string;
     image_url?: string;
+    image_source?: 'user_photo_lion' | 'ai_illustration';
     location?: string;
     author_name?: string;
 }
@@ -148,6 +152,7 @@ function getJournalContent(outputText: string): JournalContent {
                 image_url: 'image_url' in parsed && typeof parsed.image_url === 'string'
                     ? parsed.image_url
                     : undefined,
+                image_source: 'image_source' in parsed && parsed.image_source === 'user_photo_lion' ? 'user_photo_lion' : 'ai_illustration',
                 location: 'location' in parsed && typeof parsed.location === 'string'
                     ? parsed.location
                     : undefined,
@@ -202,24 +207,6 @@ function seedFromPostId(postId: string): number {
     );
 }
 
-function sortByTrendingScore(
-    posts: FeedPost[],
-    countsByGeneration: Record<string, ReactionCounts>,
-): FeedPost[] {
-    const now = Date.now();
-    return [...posts].sort((a, b) => {
-        const score = (post: FeedPost) => {
-            const hoursSinceCreated = Math.max(0, (now - new Date(post.created_at).getTime()) / 3_600_000);
-            const counts = countsByGeneration[post.id];
-            return (counts?.coffee ?? post.coffee_count ?? 0) * 1.5 +
-                (counts?.hug ?? post.hug_count ?? 0) -
-                hoursSinceCreated * 0.8;
-        };
-        return score(b) - score(a) ||
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
-}
-
 function toFeedPost(generation: Generation, seed?: number): FeedPost {
     const content = getJournalContent(generation.output_text);
     const imagePrompt = generation.image_prompt || content.image_prompt ||
@@ -228,6 +215,7 @@ function toFeedPost(generation: Generation, seed?: number): FeedPost {
 
     return {
         ...generation,
+        image_source: generation.image_source || content.image_source,
         imagePrompt,
         imageUrl: generation.imageUrl || generation.image_url || content.image_url || createPostImageUrl(imagePrompt, generation.id, stableSeed),
     };
@@ -269,10 +257,12 @@ function getRenderedImageSrc(src: string): string {
 function PostImage({
     src,
     preloaded = false,
+    preservePhoto = false,
     alt,
 }: {
     src: string;
     preloaded?: boolean;
+    preservePhoto?: boolean;
     alt: string;
 }) {
     const [loaded, setLoaded] = useState(preloaded);
@@ -300,7 +290,7 @@ function PostImage({
                     }}
                     onError={handleError}
                     loading="lazy"
-                    className={`h-56 w-full rounded-xl object-cover transition-opacity duration-500 ${
+                    className={`h-56 w-full rounded-xl ${preservePhoto ? 'object-contain' : 'object-cover'} transition-opacity duration-500 ${
                         loaded ? 'opacity-100' : 'opacity-0'
                     }`}
                 />
@@ -310,7 +300,7 @@ function PostImage({
                     role="img"
                     aria-label={alt}
                 >
-                    {hasImageUrl ? 'Illustration temporarily unavailable' : 'Illustration is being prepared'}
+                    {preservePhoto ? 'Photo temporarily unavailable — refresh to retry' : hasImageUrl ? 'Illustration temporarily unavailable' : 'Illustration is being prepared'}
                 </div>
             )}
         </div>
@@ -335,6 +325,9 @@ export default function Home() {
     const [loadingMorePosts, setLoadingMorePosts] = useState(false);
     const [showTrendingHelp, setShowTrendingHelp] = useState(false);
     const [locallyCommentedPosts, setLocallyCommentedPosts] = useState<Record<string, boolean>>({});
+    const commentedIdsKey = Object.keys(locallyCommentedPosts).slice(-200).join(',');
+    const [nextOffset, setNextOffset] = useState<number | null>(null);
+    const feedRequest = useRef(0);
     const [feedLoading, setFeedLoading] = useState(true);
     const [feedError, setFeedError] = useState<string | null>(null);
     const [reactions, setReactions] = useState<Record<string, ReactionState>>({});
@@ -362,22 +355,15 @@ export default function Home() {
     const [stressLevel, setStressLevel] = useState(5);
     const [tone, setTone] = useState<ToneType>('gentle');
     const [loading, setLoading] = useState(false);
+    const [photo, setPhoto] = useState<PreparedPhoto | null>(null);
+    const [photoPreparing, setPhotoPreparing] = useState(false);
+    const [photoRevision, setPhotoRevision] = useState(0);
     const [downloadingCard, setDownloadingCard] = useState<string | null>(null);
     const [currentUser, setCurrentUser] = useState<User | null>(null);
+    const photoOwnerId = useRef<string | null>(null);
     const [toastMessage, setToastMessage] = useState<string | null>(null);
     const generationIdsKey = generations.map((generation) => generation.id).join(',');
-    const orderedGenerations = feedSort === 'highest-stress'
-        ? sortByTrendingScore(generations, reactionCounts)
-        : generations;
-    const filteredGenerations = orderedGenerations.filter((generation) => {
-        if (feedTab === 'explore') return true;
-        if (feedTab === 'mine') return Boolean(currentUser && generation.user_id === currentUser.id);
-        if (!currentUser) return false;
-        const reaction = reactions[`${currentUser.id}:${generation.id}`];
-        return Boolean(
-            locallyCommentedPosts[generation.id] || reaction?.hug || reaction?.coffee,
-        );
-    });
+    const filteredGenerations = generations;
     const visibleGenerations = filteredGenerations.slice(0, visiblePostCount);
 
     const selectFeedTab = (tab: FeedTab) => {
@@ -391,13 +377,9 @@ export default function Home() {
     };
 
     const loadMorePosts = () => {
-        if (loadingMorePosts || visiblePostCount >= filteredGenerations.length) return;
+        if (loadingMorePosts || nextOffset === null) return;
         setLoadingMorePosts(true);
-        feedPageTimer.current = window.setTimeout(() => {
-            setVisiblePostCount((count) => Math.min(count + FEED_PAGE_SIZE, filteredGenerations.length));
-            setLoadingMorePosts(false);
-            feedPageTimer.current = null;
-        }, 250);
+        void fetchGenerations(false, nextOffset);
     };
 
     useEffect(
@@ -422,36 +404,39 @@ export default function Home() {
         }, 2500);
     };
 
-    const fetchGenerations = useCallback(async (showLoading = true) => {
+    const fetchGenerations = useCallback(async (showLoading = true, offset = 0) => {
+        const requestId = ++feedRequest.current;
+        if (!currentUser?.id) {
+            setGenerations([]);
+            setFeedLoading(false);
+            setFeedError('Sign in to view the feed.');
+            return;
+        }
         if (feedPageTimer.current !== null) window.clearTimeout(feedPageTimer.current);
-        setVisiblePostCount(FEED_PAGE_SIZE);
-        setLoadingMorePosts(false);
+        if (offset === 0) {
+            setVisiblePostCount(FEED_PAGE_SIZE);
+            setGenerations([]);
+            setNextOffset(null);
+            setLoadingMorePosts(false);
+        }
         if (showLoading) setFeedLoading(true);
         setFeedError(null);
         try {
-            const query = supabase
-                .from('generations')
-                .select('*')
-                .order('created_at', { ascending: false });
-
-            const { data, error } = await query;
-            if (error) throw error;
-
-            setGenerations(data.map((generation) => toFeedPost(generation)));
-            setReactionCounts(
-                Object.fromEntries(
-                    data.map((generation) => [
-                        generation.id,
-                        {
-                            hug: generation.hug_count ?? 0,
-                            coffee: generation.coffee_count ?? 0,
-                        },
-                    ]),
-                ),
-            );
+            const response = await fetch(`/api/feed?offset=${offset}&tab=${feedTab}&sort=${feedSort}&commented=${encodeURIComponent(commentedIdsKey)}`, { cache: 'no-store' });
+            const page = await response.json();
+            if (!response.ok) throw new Error(page.error || 'The feed could not be loaded.');
+            if (requestId !== feedRequest.current) return;
+            const data: Generation[] = page.posts;
+            const posts = data.map((generation) => toFeedPost(generation));
+            setGenerations((previous) => offset === 0 ? posts : [...previous, ...posts.filter((post) => !previous.some((existing) => existing.id === post.id))]);
+            setVisiblePostCount((count) => offset === 0 ? FEED_PAGE_SIZE : count + FEED_PAGE_SIZE);
+            setNextOffset(page.nextOffset);
+            setReactionCounts((previous) => ({ ...previous, ...Object.fromEntries(data.map((generation) => [generation.id, { hug: generation.hug_count ?? 0, coffee: generation.coffee_count ?? 0 }])) }));
+            if (!data.length) return;
             const { data: comments, error: commentsError } = await supabase
                 .from('feed_comments')
-                .select('generation_id');
+                .select('generation_id')
+                .in('generation_id', data.map((generation) => generation.id));
             if (commentsError) {
                 console.error('Comment count fetch error:', commentsError);
             } else {
@@ -459,15 +444,17 @@ export default function Home() {
                     result[comment.generation_id] = (result[comment.generation_id] ?? 0) + 1;
                     return result;
                 }, {});
-                setCommentCounts(counts);
+                if (requestId === feedRequest.current) setCommentCounts((previous) => ({ ...previous, ...counts }));
             }
         } catch (error) {
-            console.error('Feed fetch error:', error);
-            setFeedError('The vent feed could not be loaded. Please try again.');
+            if (requestId === feedRequest.current) setFeedError(error instanceof Error ? error.message : 'The feed could not be loaded.');
         } finally {
-            setFeedLoading(false);
+            if (requestId === feedRequest.current) {
+                setFeedLoading(false);
+                setLoadingMorePosts(false);
+            }
         }
-    }, [supabase]);
+    }, [supabase, feedTab, feedSort, currentUser?.id, commentedIdsKey]);
 
     const showToast = (message: string) => {
         setToastMessage(message);
@@ -477,6 +464,12 @@ export default function Home() {
     useEffect(() => {
         const applyAuthUser = (user: User | null) => {
             setCurrentUser(user);
+            if (photoOwnerId.current !== (user?.id ?? null)) {
+                photoOwnerId.current = user?.id ?? null;
+                setPhoto(null);
+                setPhotoPreparing(false);
+                setPhotoRevision((previous) => previous + 1);
+            }
             if (!user) {
                 setLocallyCommentedPosts({});
                 return;
@@ -569,6 +562,11 @@ export default function Home() {
             return;
         }
 
+        if (photoPreparing) return;
+        if (photo && !photo.consent) {
+            showToast('Please agree to photo analysis and community sharing, or remove the photo.');
+            return;
+        }
         setLoading(true);
         setLatestReflection(null);
         const minimumLoadingTime = new Promise<void>((resolve) => {
@@ -583,6 +581,7 @@ export default function Home() {
                     location: `${time} at ${location.trim()}`,
                     stress_level: Number(stressLevel),
                     tone,
+                    ...(photo ? { photo_data_url: photo.dataUrl, photo_consent: photo.consent } : {}),
                 }),
             });
 
@@ -596,6 +595,7 @@ export default function Home() {
             const generatedImage = generated.base64Image || generated.imageUrl;
             let imageUrl: string;
             let imageFallback = generated.image_fallback === true;
+            if (generated.image_source === 'user_photo_lion' && !generatedImage?.startsWith('data:image/')) throw new Error('Your photo card was saved but could not be loaded. Refresh the feed to try again.');
             if (!generatedImage?.startsWith('data:image/')) {
                 imageUrl = createPlaceholderImageDataUrl();
                 imageFallback = true;
@@ -603,6 +603,7 @@ export default function Home() {
                 try {
                     imageUrl = await preloadImage(generatedImage);
                 } catch (error) {
+                    if (generated.image_source === 'user_photo_lion') throw new Error('Your photo card was saved but could not be loaded. Refresh the feed to try again.');
                     console.warn('Generated illustration could not be loaded; using a placeholder.', error);
                     imageUrl = createPlaceholderImageDataUrl();
                     imageFallback = true;
@@ -636,12 +637,15 @@ export default function Home() {
             setPrompt('');
             setTime('');
             setLocation('');
+            setPhoto(null);
+            setPhotoRevision((previous) => previous + 1);
+            if (typeof generated.photo_notice === 'string') showToast(generated.photo_notice);
             if (imageFallback) {
                 showToast("Your reflection is ready, but its illustration is unavailable. We've shown a calm placeholder instead.");
             }
         } catch (error) {
             console.error('Reflection generation failed:', error);
-            showToast('We could not create your reflection just now. Please try again shortly.');
+            showToast(error instanceof Error ? error.message : 'We could not create your reflection just now. Please try again shortly.');
         } finally {
             await minimumLoadingTime;
             setLoading(false);
@@ -657,7 +661,10 @@ export default function Home() {
 
         setDownloadingCard(generationId);
         try {
+            const generation = generations.find((post) => post.id === generationId) || latestReflection;
+            const isPhoto = generation?.image_source === 'user_photo_lion' || (generation && getJournalContent(generation.output_text).image_source === 'user_photo_lion');
             const image = card.querySelector('img');
+            if (isPhoto && !image) throw new Error('Your photo is not ready yet. Please wait and try again.');
             if (image) {
                 image.loading = 'eager';
                 if (!image.complete) {
@@ -739,7 +746,16 @@ export default function Home() {
                         cropHeight = image.naturalWidth / targetRatio;
                         cropY = (image.naturalHeight - cropHeight) / 2;
                     }
-                    context.drawImage(image, cropX, cropY, cropWidth, cropHeight, imageX, imageY, imageWidth, imageHeight);
+                    if (isPhoto) {
+                        const scale = Math.min(imageWidth / image.naturalWidth, imageHeight / image.naturalHeight);
+                        const drawWidth = image.naturalWidth * scale;
+                        const drawHeight = image.naturalHeight * scale;
+                        context.fillStyle = '#f5f5f4';
+                        context.fillRect(imageX, imageY, imageWidth, imageHeight);
+                        context.drawImage(image, imageX + (imageWidth - drawWidth) / 2, imageY + (imageHeight - drawHeight) / 2, drawWidth, drawHeight);
+                    } else {
+                        context.drawImage(image, cropX, cropY, cropWidth, cropHeight, imageX, imageY, imageWidth, imageHeight);
+                    }
                 } else {
                     context.fillStyle = '#e8f4ec';
                     context.fillRect(imageX, imageY, imageWidth, imageHeight);
@@ -796,6 +812,7 @@ export default function Home() {
                 drawCanvas(true);
                 canvas.toDataURL('image/png');
             } catch (error) {
+                if (isPhoto) throw new Error('Could not export your photo. Please retry; no photo-less card was downloaded.');
                 console.warn('Canvas could not read the illustration; exporting card text with a clean image area.', error);
                 canvas.width = 800;
                 canvas.height = 1100;
@@ -808,7 +825,7 @@ export default function Home() {
             downloadLink.click();
         } catch (error) {
             console.error('Could not export journal card:', error);
-            showToast('Could not download the Polaroid. Please try again.');
+            showToast(error instanceof Error ? error.message : 'Could not download the Polaroid. Please try again.');
         } finally {
             setDownloadingCard(null);
         }
@@ -1413,6 +1430,7 @@ export default function Home() {
                         disabled={loading}
                         required
                     />
+                    <PhotoUpload key={photoRevision} disabled={loading} onChange={setPhoto} onBusyChange={setPhotoPreparing} />
                     <div className="mt-3">
                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-stone-500 dark:text-stone-400">
                             Try these ideas
@@ -1519,7 +1537,7 @@ export default function Home() {
 
                     <button
                         type="submit"
-                        disabled={loading || !prompt.trim() || !time || location.trim().length < 2}
+                        disabled={loading || photoPreparing || Boolean(photo && !photo.consent) || !prompt.trim() || !time || location.trim().length < 2}
                         className="mt-6 w-full rounded-xl bg-[#4E816A] px-6 py-3 font-semibold text-white shadow-sm transition-colors duration-200 hover:bg-[#3D6E58] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-400 dark:text-stone-950 dark:hover:bg-emerald-300"
                     >
                         {loading ? 'Reframing...' : 'Find some perspective'}
@@ -1616,8 +1634,9 @@ export default function Home() {
                                                     new Date(latestReflection.created_at).getTime(),
                                                 )
                                             }
+                                            preservePhoto={content.image_source === 'user_photo_lion'}
                                             preloaded={latestReflection.imagePreloaded}
-                                            alt={latestReflection.stoic_quote || 'Reflection illustration'}
+                                            alt={content.image_source === 'user_photo_lion' ? 'Your photo with a cute blue-shirt lion companion' : latestReflection.stoic_quote || 'Reflection illustration'}
                                         />
                                     </div>
                                     <span className="mb-3 inline-flex rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900">
@@ -1975,8 +1994,9 @@ export default function Home() {
                                                 <PostImage
                                                     key={`${post.id}:${post.imageUrl}`}
                                                     src={post.imageUrl}
+                                                    preservePhoto={post.image_source === 'user_photo_lion'}
                                                     preloaded={post.imagePreloaded}
-                                                    alt={post.stoic_quote || 'Reflection illustration'}
+                                                    alt={post.image_source === 'user_photo_lion' ? 'Photo with a cute blue-shirt lion companion' : post.stoic_quote || 'Reflection illustration'}
                                                 />
                                             </div>
                                             <div className="mb-3 flex flex-wrap gap-2">
@@ -2059,9 +2079,9 @@ export default function Home() {
                 {!feedLoading && !feedError && filteredGenerations.length > 0 && (
                     <div className="mt-6 flex flex-col items-center gap-3">
                         <p className="text-sm text-stone-500 dark:text-stone-400" aria-live="polite">
-                            Showing {visibleGenerations.length} of {filteredGenerations.length} moments
+                            Showing {visibleGenerations.length} loaded moments
                         </p>
-                        {visibleGenerations.length < filteredGenerations.length ? (
+                        {nextOffset !== null ? (
                             <button
                                 type="button"
                                 onClick={loadMorePosts}
