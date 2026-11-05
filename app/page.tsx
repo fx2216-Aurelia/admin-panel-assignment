@@ -4,22 +4,23 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { User } from '@supabase/supabase-js';
 import { createClient } from '@/lib/client';
-import { castVote } from '@/app/actions/vote';
+import { cancelCoffeeOffer, castVote, postFeedComment } from '@/app/actions/vote';
 import GoogleSignInButton from '@/components/GoogleSignInButton';
 import SignOutButton from '@/components/SignOutButton';
 import StoicLoader from '@/components/StoicLoader';
-import AmbientSoundControl from '@/components/AmbientSoundControl';
-import CoffeeOfferDialog from '@/components/CoffeeOfferDialog';
-import CoffeeNotifications from '@/components/CoffeeNotifications';
-import { sendCoffeeOffer } from '@/app/actions/coffee';
-import type { CoffeePlatform } from '@/lib/coffee';
+import VentCard from '@/components/VentCard';
+import { LionSticker, type StickerPosition } from '@/components/LionSticker';
+import type { VentJournalActions } from '@/components/VentCard';
+import { toPng } from 'html-to-image';
 
 type ToneType = 'gentle' | 'roast';
 type FeedSort = 'latest' | 'highest-stress';
 type ReactionType = 'hug' | 'coffee';
 type FeedTab = 'explore' | 'mine' | 'interacted';
+type SocialPlatform = 'WeChat' | 'Instagram' | 'LinkedIn' | 'Facebook';
 
 const FEED_PAGE_SIZE = 10;
+const LOCAL_POSTS_STORAGE_KEY = 'meditations-local-vent-posts';
 
 const mascotMessages = [
     "Take a deep breath ✨",
@@ -42,6 +43,9 @@ interface Generation {
     base64Image?: string;
     image_fallback?: boolean;
     imagePreloaded?: boolean;
+    userImage?: string | null;
+    userUploadedImage?: string | null;
+    stickerPosition?: StickerPosition;
     created_at: string;
     hug_count?: number | null;
     coffee_count?: number | null;
@@ -52,10 +56,47 @@ interface FeedPost extends Generation {
     readonly imagePrompt?: string;
 }
 
-interface JournalActions {
-    meditation: string;
-    walk: string;
-    nearby_anchor: string;
+function isStoredFeedPost(value: unknown): value is FeedPost {
+    return (
+        typeof value === 'object' &&
+        value !== null &&
+        'id' in value && typeof value.id === 'string' &&
+        'user_id' in value && typeof value.user_id === 'string' &&
+        'prompt' in value && typeof value.prompt === 'string' &&
+        'output_text' in value && typeof value.output_text === 'string' &&
+        'created_at' in value && typeof value.created_at === 'string' &&
+        'imageUrl' in value && typeof value.imageUrl === 'string' &&
+        (!('userImage' in value) || value.userImage === null || typeof value.userImage === 'string') &&
+        (!('userUploadedImage' in value) || value.userUploadedImage === null || typeof value.userUploadedImage === 'string') &&
+        (!('stickerPosition' in value) || value.stickerPosition === undefined ||
+            (typeof value.stickerPosition === 'object' && value.stickerPosition !== null &&
+                'x' in value.stickerPosition && typeof value.stickerPosition.x === 'number' &&
+                'y' in value.stickerPosition && typeof value.stickerPosition.y === 'number' &&
+                'scale' in value.stickerPosition && typeof value.stickerPosition.scale === 'number' &&
+                'rotation' in value.stickerPosition && typeof value.stickerPosition.rotation === 'number'))
+    );
+}
+
+function getUserUploadedImage(post: Pick<Generation, 'userImage' | 'userUploadedImage'>): string | null {
+    const image = post.userImage || post.userUploadedImage;
+    return typeof image === 'string' && image.trim() ? image : null;
+}
+
+function mergeFeedPosts(current: FeedPost[], incoming: FeedPost[]): FeedPost[] {
+    const postsById = new Map(current.map((post) => [post.id, post]));
+    for (const post of incoming) {
+        const existing = postsById.get(post.id);
+        const userImage = getUserUploadedImage(existing ?? {});
+        postsById.set(post.id, {
+            ...post,
+            ...(userImage
+                ? { userImage, stickerPosition: existing?.stickerPosition }
+                : {}),
+        });
+    }
+    return [...postsById.values()].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
 }
 
 interface JournalContent {
@@ -65,10 +106,12 @@ interface JournalContent {
         step1: string;
         step2: string;
     };
-    actions?: JournalActions;
+    actions?: VentJournalActions;
     scene_theme?: string;
     image_prompt?: string;
     image_url?: string;
+    userImage?: string;
+    stickerPosition?: StickerPosition;
     location?: string;
     author_name?: string;
 }
@@ -89,6 +132,7 @@ interface FeedComment {
     content: string;
     created_at: string;
     author_name?: string | null;
+    user_id?: string | null;
 }
 
 function getJournalContent(outputText: string): JournalContent {
@@ -101,7 +145,7 @@ function getJournalContent(outputText: string): JournalContent {
             typeof parsed.analysis === 'string'
         ) {
             const actions = 'actions' in parsed ? parsed.actions : undefined;
-            const validActions =
+            const validActions: VentJournalActions | undefined =
                 typeof actions === 'object' &&
                 actions !== null &&
                 'meditation' in actions &&
@@ -147,6 +191,25 @@ function getJournalContent(outputText: string): JournalContent {
                     : undefined,
                 image_url: 'image_url' in parsed && typeof parsed.image_url === 'string'
                     ? parsed.image_url
+                    : undefined,
+                userImage: 'userImage' in parsed && typeof parsed.userImage === 'string'
+                    ? parsed.userImage
+                    : 'userUploadedImage' in parsed && typeof parsed.userUploadedImage === 'string'
+                        ? parsed.userUploadedImage
+                        : undefined,
+                stickerPosition: 'stickerPosition' in parsed &&
+                    typeof parsed.stickerPosition === 'object' &&
+                    parsed.stickerPosition !== null &&
+                    'x' in parsed.stickerPosition && typeof parsed.stickerPosition.x === 'number' &&
+                    'y' in parsed.stickerPosition && typeof parsed.stickerPosition.y === 'number' &&
+                    'scale' in parsed.stickerPosition && typeof parsed.stickerPosition.scale === 'number' &&
+                    'rotation' in parsed.stickerPosition && typeof parsed.stickerPosition.rotation === 'number'
+                    ? {
+                          x: parsed.stickerPosition.x,
+                          y: parsed.stickerPosition.y,
+                          scale: parsed.stickerPosition.scale,
+                          rotation: parsed.stickerPosition.rotation,
+                      }
                     : undefined,
                 location: 'location' in parsed && typeof parsed.location === 'string'
                     ? parsed.location
@@ -229,6 +292,8 @@ function toFeedPost(generation: Generation, seed?: number): FeedPost {
     return {
         ...generation,
         imagePrompt,
+        userImage: generation.userImage || content.userImage || null,
+        stickerPosition: generation.stickerPosition || content.stickerPosition,
         imageUrl: generation.imageUrl || generation.image_url || content.image_url || createPostImageUrl(imagePrompt, generation.id, stableSeed),
     };
 }
@@ -253,70 +318,6 @@ function createPlaceholderImageDataUrl(): string {
     return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
-function getRenderedImageSrc(src: string): string {
-    if (src.startsWith('data:image/')) return src;
-    try {
-        const url = new URL(src);
-        if (url.hostname === 'image.pollinations.ai' || url.hostname === 'images.unsplash.com') {
-            return `/api/proxy-image?url=${encodeURIComponent(url.href)}`;
-        }
-    } catch {
-        return src;
-    }
-    return src;
-}
-
-function PostImage({
-    src,
-    preloaded = false,
-    alt,
-}: {
-    src: string;
-    preloaded?: boolean;
-    alt: string;
-}) {
-    const [loaded, setLoaded] = useState(preloaded);
-    const renderedSrc = getRenderedImageSrc(src);
-    const [unavailable, setUnavailable] = useState(false);
-    const hasImageUrl = Boolean(src.trim());
-
-    const handleError = () => {
-        setUnavailable(true);
-        setLoaded(false);
-    };
-
-    return (
-        <div className="relative flex h-56 min-h-56 w-full items-center justify-center overflow-hidden rounded-xl bg-stone-100 shadow-inner">
-            {hasImageUrl && !loaded && (
-                <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-[#E8F4EC] via-[#FBF5E7] to-[#E8F4EC]" />
-            )}
-            {hasImageUrl && !unavailable ? (
-                <img
-                    src={renderedSrc}
-                    alt={alt || 'Stoic reflection illustration'}
-                    crossOrigin="anonymous"
-                    onLoad={() => {
-                        setLoaded(true);
-                    }}
-                    onError={handleError}
-                    loading="lazy"
-                    className={`h-56 w-full rounded-xl object-cover transition-opacity duration-500 ${
-                        loaded ? 'opacity-100' : 'opacity-0'
-                    }`}
-                />
-            ) : (
-                <div
-                    className="flex h-full w-full items-center justify-center bg-gradient-to-br from-[#E8F4EC] via-[#FBF5E7] to-[#E7EEF7] px-6 text-center text-sm text-[#496B57]"
-                    role="img"
-                    aria-label={alt}
-                >
-                    {hasImageUrl ? 'Illustration temporarily unavailable' : 'Illustration is being prepared'}
-                </div>
-            )}
-        </div>
-    );
-}
-
 function relativeTime(timestamp: string): string {
     const elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000));
     if (elapsedSeconds < 60) return 'just now';
@@ -328,6 +329,9 @@ function relativeTime(timestamp: string): string {
 export default function Home() {
     const [supabase] = useState(() => createClient());
     const [generations, setGenerations] = useState<FeedPost[]>([]);
+    const [localPosts, setLocalPosts] = useState<FeedPost[]>([]);
+    const localPostsRef = useRef<FeedPost[]>([]);
+    const [localPostsLoaded, setLocalPostsLoaded] = useState(false);
     const [latestReflection, setLatestReflection] = useState<Generation | null>(null);
     const [feedSort, setFeedSort] = useState<FeedSort>('latest');
     const [feedTab, setFeedTab] = useState<FeedTab>('explore');
@@ -346,8 +350,11 @@ export default function Home() {
     const [commentsLoading, setCommentsLoading] = useState<Record<string, boolean>>({});
     const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
     const [commentPosting, setCommentPosting] = useState<Record<string, boolean>>({});
-    const [coffeeTarget, setCoffeeTarget] = useState<string | null>(null);
-    const [notificationTarget, setNotificationTarget] = useState<string | null>(null);
+    const [coffeeOfferGenerationId, setCoffeeOfferGenerationId] = useState<string | null>(null);
+    const [coffeeSocialPlatform, setCoffeeSocialPlatform] = useState<SocialPlatform>('Instagram');
+    const [coffeeSocialHandle, setCoffeeSocialHandle] = useState('');
+    const [coffeeOfferError, setCoffeeOfferError] = useState<string | null>(null);
+    const [coffeeOfferSubmitting, setCoffeeOfferSubmitting] = useState(false);
     const reactionLocks = useRef(new Set<string>());
     const latestReflectionRef = useRef<HTMLElement>(null);
     const feedListRef = useRef<HTMLDivElement>(null);
@@ -360,12 +367,36 @@ export default function Home() {
     const [mascotAnimating, setMascotAnimating] = useState(false);
     const mascotMessageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [stressLevel, setStressLevel] = useState(5);
+    const [vibeImage, setVibeImage] = useState<string | null>(null);
+    const [vibeImageName, setVibeImageName] = useState<string | null>(null);
+    const [vibeImageError, setVibeImageError] = useState<string | null>(null);
+    const [stickerPosition, setStickerPosition] = useState<StickerPosition>({
+        x: 50,
+        y: 58,
+        scale: 1,
+        rotation: 0,
+    });
+    const stickerDragStart = useRef<{
+        pointerId: number;
+        clientX: number;
+        clientY: number;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    } | null>(null);
     const [tone, setTone] = useState<ToneType>('gentle');
     const [loading, setLoading] = useState(false);
     const [downloadingCard, setDownloadingCard] = useState<string | null>(null);
     const [currentUser, setCurrentUser] = useState<User | null>(null);
     const [toastMessage, setToastMessage] = useState<string | null>(null);
     const generationIdsKey = generations.map((generation) => generation.id).join(',');
+    const ownGenerationIdsKey = currentUser
+        ? generations
+              .filter((generation) => generation.user_id === currentUser.id)
+              .map((generation) => generation.id)
+              .join(',')
+        : '';
     const orderedGenerations = feedSort === 'highest-stress'
         ? sortByTrendingScore(generations, reactionCounts)
         : generations;
@@ -437,18 +468,54 @@ export default function Home() {
             const { data, error } = await query;
             if (error) throw error;
 
-            setGenerations(data.map((generation) => toFeedPost(generation)));
-            setReactionCounts(
-                Object.fromEntries(
-                    data.map((generation) => [
-                        generation.id,
-                        {
-                            hug: generation.hug_count ?? 0,
-                            coffee: generation.coffee_count ?? 0,
-                        },
-                    ]),
-                ),
-            );
+            const fetchedPosts = data.map((generation) => toFeedPost(generation));
+            const fetchedIds = new Set(fetchedPosts.map((post) => post.id));
+            const coffeeCounts: Record<string, number> = {};
+            if (fetchedIds.size > 0) {
+                for (let offset = 0; ; offset += 1000) {
+                    const { data: coffeeVotes, error: coffeeVotesError } = await supabase
+                        .from('votes')
+                        .select('generation_id')
+                        .eq('vote_type', 'coffee')
+                        .in('generation_id', [...fetchedIds])
+                        .range(offset, offset + 999);
+                    if (coffeeVotesError) throw coffeeVotesError;
+                    for (const vote of coffeeVotes) {
+                        coffeeCounts[vote.generation_id] = (coffeeCounts[vote.generation_id] ?? 0) + 1;
+                    }
+                    if (coffeeVotes.length < 1000) break;
+                }
+            }
+            setGenerations((previous) => {
+                const mergedFetchedPosts = fetchedPosts.map((post) => {
+                    const localPost = localPostsRef.current.find((entry) => entry.id === post.id);
+                    const previousPost = previous.find((entry) => entry.id === post.id);
+                    const imagePost = getUserUploadedImage(localPost ?? {})
+                        ? localPost
+                        : previousPost;
+                    const userImage = getUserUploadedImage(imagePost ?? {});
+                    return userImage
+                        ? {
+                              ...post,
+                              userImage,
+                              stickerPosition: imagePost?.stickerPosition,
+                          }
+                        : post;
+                });
+                const retainedPosts = previous.filter((post) => !fetchedIds.has(post.id));
+                return [...mergedFetchedPosts, ...retainedPosts].sort(
+                    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+                );
+            });
+            setReactionCounts(Object.fromEntries(
+                data.map((generation) => [
+                    generation.id,
+                    {
+                        hug: generation.hug_count ?? 0,
+                        coffee: coffeeCounts[generation.id] ?? 0,
+                    },
+                ]),
+            ));
             const { data: comments, error: commentsError } = await supabase
                 .from('feed_comments')
                 .select('generation_id');
@@ -469,9 +536,95 @@ export default function Home() {
         }
     }, [supabase]);
 
+    const refreshCoffeeCount = useCallback(async (generationId: string) => {
+        const { count, error } = await supabase
+            .from('votes')
+            .select('generation_id', { count: 'exact', head: true })
+            .eq('generation_id', generationId)
+            .eq('vote_type', 'coffee');
+        if (error) throw error;
+
+        const coffeeCount = count ?? 0;
+        setReactionCounts((previous) => ({
+            ...previous,
+            [generationId]: {
+                ...(previous[generationId] ?? { hug: 0, coffee: 0 }),
+                coffee: coffeeCount,
+            },
+        }));
+        setGenerations((previous) => previous.map((post) =>
+            post.id === generationId ? { ...post, coffee_count: coffeeCount } : post,
+        ));
+    }, [supabase]);
+
     const showToast = (message: string) => {
         setToastMessage(message);
         setTimeout(() => setToastMessage(null), 3500);
+    };
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            try {
+                const storedValue = window.localStorage.getItem(LOCAL_POSTS_STORAGE_KEY);
+                if (storedValue) {
+                    const parsed: unknown = JSON.parse(storedValue);
+                    if (!Array.isArray(parsed)) {
+                        throw new Error('Saved vent history has an invalid format.');
+                    }
+
+                    const savedPosts = parsed.filter(isStoredFeedPost).map((post) => ({
+                        ...post,
+                        userImage: getUserUploadedImage(post),
+                    }));
+                    if (savedPosts.length !== parsed.length) {
+                        console.error('Some saved vents were skipped because their data was invalid.');
+                    }
+                    localPostsRef.current = savedPosts;
+                    setLocalPosts(savedPosts);
+                    setGenerations((previous) => mergeFeedPosts(previous, savedPosts));
+                }
+            } catch (error) {
+                console.error('Could not restore saved vent history:', error);
+                showToast('Saved vent history could not be restored. Your server-saved posts are still available.');
+            } finally {
+                setLocalPostsLoaded(true);
+            }
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, []);
+
+    useEffect(() => {
+        if (!localPostsLoaded) return;
+        try {
+            if (localPosts.length === 0) {
+                window.localStorage.removeItem(LOCAL_POSTS_STORAGE_KEY);
+                return;
+            }
+            const postsForStorage = localPosts.map((post) => {
+                const storedPost = { ...post };
+                delete storedPost.base64Image;
+                return storedPost;
+            });
+            window.localStorage.setItem(LOCAL_POSTS_STORAGE_KEY, JSON.stringify(postsForStorage));
+        } catch (error) {
+            console.error('Could not persist local vent history:', error);
+            window.setTimeout(
+                () => showToast('Your post is visible, but browser storage is full. Clear saved local posts to make room.'),
+                0,
+            );
+        }
+    }, [localPosts, localPostsLoaded]);
+
+    const clearSavedLocalPosts = () => {
+        localPostsRef.current = [];
+        setLocalPosts([]);
+        setGenerations((previous) =>
+            previous.map((post) => ({ ...post, userImage: null, stickerPosition: undefined })),
+        );
+        setLatestReflection((previous) =>
+            previous ? { ...previous, userImage: null, stickerPosition: undefined } : previous,
+        );
+        showToast('Saved local photos and post copies were cleared. Server posts remain in the feed.');
     };
 
     useEffect(() => {
@@ -550,10 +703,178 @@ export default function Home() {
     }, [currentUser, generationIdsKey, supabase]);
 
     useEffect(() => {
+        if (!currentUser || !ownGenerationIdsKey) return;
+
+        const ownPostIds = new Set(ownGenerationIdsKey.split(','));
+        const channel = supabase
+            .channel(`coffee-offer-notifications-${currentUser.id}`)
+            .on(
+                'postgres_changes',
+                { event: 'INSERT', schema: 'public', table: 'feed_comments' },
+                (payload) => {
+                    const comment = payload.new as {
+                        generation_id?: unknown;
+                        content?: unknown;
+                    };
+                    if (
+                        typeof comment.generation_id === 'string' &&
+                        ownPostIds.has(comment.generation_id) &&
+                        typeof comment.content === 'string' &&
+                        comment.content.startsWith('☕ Bought you a coffee!')
+                    ) {
+                        setToastMessage('☕ Someone offered you a coffee on your post.');
+                        window.setTimeout(() => setToastMessage(null), 3500);
+                    }
+                },
+            )
+            .subscribe((status, error) => {
+                if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                    console.error('Coffee offer notifications could not connect:', error ?? status);
+                }
+            });
+
+        return () => {
+            void supabase.removeChannel(channel);
+        };
+    }, [currentUser, ownGenerationIdsKey, supabase]);
+
+    useEffect(() => {
+        if (!generationIdsKey) return;
+
+        const channel = supabase
+            .channel('feed-coffee-vote-counts')
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'votes', filter: 'vote_type=eq.coffee' },
+                (payload) => {
+                    const vote = (payload.new ?? payload.old) as {
+                        generation_id?: unknown;
+                        vote_type?: unknown;
+                    };
+                    if (
+                        typeof vote.generation_id !== 'string' ||
+                        vote.vote_type !== 'coffee' ||
+                        !generationIdsKey.split(',').includes(vote.generation_id)
+                    ) {
+                        return;
+                    }
+                    void refreshCoffeeCount(vote.generation_id).catch((error) => {
+                        console.error('Could not refresh coffee reaction count:', error);
+                    });
+                },
+            )
+            .subscribe((status, error) => {
+                if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                    console.error('Coffee count updates could not connect:', error ?? status);
+                }
+            });
+
+        return () => {
+            void supabase.removeChannel(channel);
+        };
+    }, [generationIdsKey, refreshCoffeeCount, supabase]);
+
+    useEffect(() => {
         if (latestReflection && !loading) {
             latestReflectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     }, [latestReflection, loading]);
+
+    const handleVibeImageChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.currentTarget.files?.[0];
+        event.currentTarget.value = '';
+        if (!file) return;
+
+        const allowedTypes = ['image/jpeg', 'image/png'];
+        const hasAllowedExtension = /\.(jpe?g|png)$/i.test(file.name);
+        if ((!allowedTypes.includes(file.type) && file.type !== '') || !hasAllowedExtension) {
+            setVibeImageError('Choose a JPG or PNG image.');
+            return;
+        }
+        if (file.size > 10 * 1024 * 1024) {
+            setVibeImageError('Choose an image smaller than 10 MB.');
+            return;
+        }
+
+        try {
+            const imageDataUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error('The selected photo could not be read.'));
+                reader.onload = () => {
+                    const result = reader.result;
+                    if (typeof result !== 'string') {
+                        reject(new Error('The selected photo could not be read.'));
+                        return;
+                    }
+
+                    const preview = new Image();
+                    preview.onload = () => {
+                        const maxDimension = 1600;
+                        const scale = Math.min(1, maxDimension / Math.max(preview.naturalWidth, preview.naturalHeight));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.max(1, Math.round(preview.naturalWidth * scale));
+                        canvas.height = Math.max(1, Math.round(preview.naturalHeight * scale));
+                        const context = canvas.getContext('2d');
+                        if (!context) {
+                            reject(new Error('Your photo could not be prepared for saving.'));
+                            return;
+                        }
+                        context.fillStyle = '#ffffff';
+                        context.fillRect(0, 0, canvas.width, canvas.height);
+                        context.drawImage(preview, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.82));
+                    };
+                    preview.onerror = () => reject(new Error('That file is not a valid image.'));
+                    preview.src = result;
+                };
+                reader.readAsDataURL(file);
+            });
+            setVibeImage(imageDataUrl);
+            setVibeImageName(file.name);
+            setVibeImageError(null);
+            setStickerPosition({ x: 50, y: 58, scale: 1, rotation: 0 });
+        } catch (error) {
+            console.error('Could not load the selected photo:', error);
+            setVibeImageError(error instanceof Error ? error.message : 'The selected photo could not be loaded.');
+        }
+    };
+
+    const handleStickerPointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
+        const frame = event.currentTarget.parentElement;
+        if (!frame) return;
+        const bounds = frame.getBoundingClientRect();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        stickerDragStart.current = {
+            pointerId: event.pointerId,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            x: stickerPosition.x,
+            y: stickerPosition.y,
+            width: bounds.width,
+            height: bounds.height,
+        };
+        event.preventDefault();
+    };
+
+    const handleStickerPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+        const start = stickerDragStart.current;
+        if (!start || start.pointerId !== event.pointerId) return;
+        const stickerWidth = 26 * stickerPosition.scale;
+        const stickerHeight = stickerWidth * (start.width / start.height);
+        setStickerPosition((position) => ({
+            ...position,
+            x: Math.max(stickerWidth / 2, Math.min(100 - stickerWidth / 2, start.x + ((event.clientX - start.clientX) / start.width) * 100)),
+            y: Math.max(stickerHeight / 2, Math.min(100 - stickerHeight / 2, start.y + ((event.clientY - start.clientY) / start.height) * 100)),
+        }));
+    };
+
+    const handleStickerPointerUp = (event: React.PointerEvent<SVGSVGElement>) => {
+        if (stickerDragStart.current?.pointerId !== event.pointerId) return;
+        stickerDragStart.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+    };
 
     const generationCardContent = (generationId: string, type: ReactionType) => {
         const stateKey = `${currentUser?.id ?? 'anonymous'}:${generationId}`;
@@ -569,6 +890,8 @@ export default function Home() {
             return;
         }
 
+        const uploadedImage = vibeImage;
+        const uploadedStickerPosition = uploadedImage ? { ...stickerPosition } : undefined;
         setLoading(true);
         setLatestReflection(null);
         const minimumLoadingTime = new Promise<void>((resolve) => {
@@ -583,6 +906,8 @@ export default function Home() {
                     location: `${time} at ${location.trim()}`,
                     stress_level: Number(stressLevel),
                     tone,
+                    userImage: uploadedImage,
+                    stickerPosition: uploadedStickerPosition,
                 }),
             });
 
@@ -614,6 +939,8 @@ export default function Home() {
                 imageUrl,
                 base64Image: imageUrl,
                 imagePreloaded: true,
+                userImage: uploadedImage,
+                stickerPosition: uploadedStickerPosition,
             };
             setLatestReflection({
                 ...generated,
@@ -623,7 +950,14 @@ export default function Home() {
                 image_prompt: newPost.imagePrompt,
                 image_fallback: imageFallback,
                 imagePreloaded: true,
+                userImage: uploadedImage,
+                stickerPosition: uploadedStickerPosition,
             });
+            localPostsRef.current = [
+                newPost,
+                ...localPostsRef.current.filter((post) => post.id !== newPost.id),
+            ];
+            setLocalPosts(localPostsRef.current);
             setGenerations((previous) => {
                 const next = [newPost, ...previous.filter((post) => post.id !== generated.id)];
                 return feedSort === 'latest'
@@ -648,185 +982,138 @@ export default function Home() {
         }
     };
 
-    const handleDownloadCard = async (generationId: string, cardElementId = `journal-card-${generationId}`) => {
-        const card = document.getElementById(cardElementId);
-        if (!card) {
-            showToast('Could not find the journal card to download.');
+    const handleDownloadCard = async (
+        generationId: string,
+        cardElementId = `journal-card-${generationId}`,
+    ) => {
+        const exportCard = document.getElementById(`polaroid-export-${cardElementId}`);
+        if (!exportCard) {
+            console.error(`Could not export Polaroid for ${generationId}: export element was not found.`);
+            showToast('Could not find the Polaroid export card.');
             return;
         }
 
         setDownloadingCard(generationId);
         try {
-            const image = card.querySelector('img');
-            if (image) {
+            const images = Array.from(exportCard.querySelectorAll('img'));
+            await Promise.all(images.map(async (image) => {
                 image.loading = 'eager';
                 if (!image.complete) {
                     await new Promise<void>((resolve, reject) => {
-                        image.addEventListener('load', () => resolve(), { once: true });
-                        image.addEventListener('error', () => reject(new Error('The illustration could not be loaded.')), { once: true });
+                        const timeout = window.setTimeout(
+                            () => reject(new Error('A Polaroid image did not finish loading in time.')),
+                            30_000,
+                        );
+                        image.addEventListener('load', () => {
+                            window.clearTimeout(timeout);
+                            resolve();
+                        }, { once: true });
+                        image.addEventListener('error', () => {
+                            window.clearTimeout(timeout);
+                            reject(new Error('A Polaroid image could not be loaded; it may be blocked by cross-origin image permissions.'));
+                        }, { once: true });
                     });
-                } else {
+                }
+                try {
                     await image.decode();
+                } catch (error) {
+                    if (image.naturalWidth === 0 || image.naturalHeight === 0) {
+                        throw new Error(
+                            'A Polaroid image could not be decoded; it may be blocked by cross-origin image permissions.',
+                            { cause: error },
+                        );
+                    }
+                    throw error;
                 }
                 if (image.naturalWidth === 0 || image.naturalHeight === 0) {
-                    throw new Error('The illustration did not finish loading.');
+                    throw new Error('A Polaroid image did not finish loading; it may be blocked by cross-origin image permissions.');
                 }
+            }));
+            await document.fonts.ready;
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+
+            const computedStyle = window.getComputedStyle(exportCard);
+            const bounds = exportCard.getBoundingClientRect();
+            if (
+                computedStyle.display === 'none' ||
+                computedStyle.visibility === 'hidden' ||
+                bounds.width < 1 ||
+                exportCard.scrollHeight < 1
+            ) {
+                throw new Error('The Polaroid export card is not ready to capture.');
             }
 
-            const canvas = document.createElement('canvas');
-            canvas.width = 800;
-            canvas.height = 1100;
-            const context = canvas.getContext('2d');
-            if (!context) throw new Error('Canvas is unavailable in this browser.');
-
-            const text = (selector: string) =>
-                card.querySelector<HTMLElement>(selector)?.textContent?.trim() ?? '';
-            const paragraphs = Array.from(card.querySelectorAll('p'));
-            const name = paragraphs[0]?.textContent?.trim() || 'Anonymous';
-            const location = paragraphs[1]?.textContent?.replace(/^📍\s*/, '').trim() || 'Morningside';
-            const date = text('time');
-            const stress = text('span').replace(/^🔥\s*/, '');
-            const quote = card.querySelector('blockquote p')?.textContent?.trim() ?? '';
-            const source = card.querySelector('blockquote cite')?.textContent?.trim() ?? '';
-            const advice = paragraphs.at(-1)?.textContent?.trim() ?? '';
-
-            const drawCanvas = (includeImage: boolean) => {
-                context.clearRect(0, 0, canvas.width, canvas.height);
-                context.fillStyle = '#fdfbf7';
-                context.shadowColor = 'rgba(41, 37, 36, 0.16)';
-                context.shadowBlur = 24;
-                context.shadowOffsetY = 10;
-                context.beginPath();
-                context.roundRect(18, 18, 764, 1064, 18);
-                context.fill();
-                context.shadowColor = 'transparent';
-                context.shadowBlur = 0;
-                context.shadowOffsetY = 0;
-                context.strokeStyle = '#e7e1d8';
-                context.lineWidth = 2;
-                context.stroke();
-
-                context.fillStyle = '#292524';
-                context.textBaseline = 'top';
-                context.font = '600 20px Georgia, serif';
-                context.fillText(name.slice(0, 42), 58, 55, 430);
-                context.fillStyle = '#78716c';
-                context.font = '16px Georgia, serif';
-                context.fillText(`📍 ${location}`.slice(0, 58), 58, 84, 430);
-                context.textAlign = 'right';
-                context.fillText(date, 742, 58, 235);
-                context.textAlign = 'left';
-
-                const imageX = 58;
-                const imageY = 132;
-                const imageWidth = 684;
-                const imageHeight = 390;
-                context.save();
-                context.beginPath();
-                context.roundRect(imageX, imageY, imageWidth, imageHeight, 10);
-                context.clip();
-                if (includeImage && image && image.naturalWidth > 0) {
-                    const sourceRatio = image.naturalWidth / image.naturalHeight;
-                    const targetRatio = imageWidth / imageHeight;
-                    let cropX = 0;
-                    let cropY = 0;
-                    let cropWidth = image.naturalWidth;
-                    let cropHeight = image.naturalHeight;
-                    if (sourceRatio > targetRatio) {
-                        cropWidth = image.naturalHeight * targetRatio;
-                        cropX = (image.naturalWidth - cropWidth) / 2;
-                    } else {
-                        cropHeight = image.naturalWidth / targetRatio;
-                        cropY = (image.naturalHeight - cropHeight) / 2;
-                    }
-                    context.drawImage(image, cropX, cropY, cropWidth, cropHeight, imageX, imageY, imageWidth, imageHeight);
-                } else {
-                    context.fillStyle = '#e8f4ec';
-                    context.fillRect(imageX, imageY, imageWidth, imageHeight);
-                    context.fillStyle = '#496b57';
-                    context.font = 'italic 26px Georgia, serif';
-                    context.textAlign = 'center';
-                    context.fillText('A quiet moment to reset', canvas.width / 2, imageY + imageHeight / 2);
-                    context.textAlign = 'left';
-                }
-                context.restore();
-                context.strokeStyle = '#e7e1d8';
-                context.lineWidth = 2;
-                context.strokeRect(imageX, imageY, imageWidth, imageHeight);
-
-                context.font = '600 16px Arial, sans-serif';
-                const badgeWidth = Math.min(220, context.measureText(stress).width + 34);
-                context.fillStyle = '#fef3c7';
-                context.beginPath();
-                context.roundRect(58, 546, badgeWidth, 36, 18);
-                context.fill();
-                context.fillStyle = '#78350f';
-                context.fillText(stress || 'Stress: —/10', 74, 556);
-
-                const drawWrappedText = (value: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
-                    const words = value.split(/\s+/).filter(Boolean);
-                    let line = '';
-                    let currentY = y;
-                    for (const word of words) {
-                        const nextLine = line ? `${line} ${word}` : word;
-                        if (context.measureText(nextLine).width > maxWidth && line) {
-                            context.fillText(line, x, currentY);
-                            currentY += lineHeight;
-                            line = word;
-                        } else {
-                            line = nextLine;
-                        }
-                    }
-                    if (line) context.fillText(line, x, currentY);
-                    return currentY + lineHeight;
-                };
-
-                context.fillStyle = '#292524';
-                context.font = 'italic 22px Georgia, serif';
-                let nextY = drawWrappedText(quote ? `“${quote}”` : '', 72, 610, 650, 32);
-                context.fillStyle = '#92400e';
-                context.font = '600 14px Arial, sans-serif';
-                nextY = drawWrappedText(source.toUpperCase(), 72, nextY + 4, 650, 22);
-                context.fillStyle = '#44403c';
-                context.font = '19px Georgia, serif';
-                drawWrappedText(advice, 58, nextY + 20, 684, 29);
+            const captureOptions = {
+                backgroundColor: '#FDFAF6',
+                pixelRatio: 2,
+                width: 1200,
+                height: exportCard.scrollHeight,
+                filter: (node: HTMLElement) => !(
+                    node instanceof HTMLElement &&
+                    node.dataset.exportIgnore !== undefined
+                ),
+                style: {
+                    position: 'fixed',
+                    left: '0',
+                    top: '0',
+                    zIndex: '1000',
+                    transform: 'none',
+                    pointerEvents: 'auto',
+                },
             };
-
+            let imageDataUrl: string;
             try {
-                drawCanvas(true);
-                canvas.toDataURL('image/png');
-            } catch (error) {
-                console.warn('Canvas could not read the illustration; exporting card text with a clean image area.', error);
-                canvas.width = 800;
-                canvas.height = 1100;
-                drawCanvas(false);
+                imageDataUrl = await toPng(exportCard, {
+                    ...captureOptions,
+                    cacheBust: true,
+                });
+            } catch (primaryError) {
+                console.warn(
+                    `Polaroid export with cache busting failed for ${generationId}; retrying without reloading images.`,
+                    primaryError,
+                );
+                imageDataUrl = await toPng(exportCard, {
+                    ...captureOptions,
+                    cacheBust: false,
+                });
             }
-            const imageDataUrl = canvas.toDataURL('image/png');
+            if (!imageDataUrl.startsWith('data:image/png;base64,') || imageDataUrl.length < 1_000) {
+                throw new Error('The Polaroid image export was empty.');
+            }
             const downloadLink = document.createElement('a');
             downloadLink.download = `polaroid-${generationId}.png`;
             downloadLink.href = imageDataUrl;
             downloadLink.click();
         } catch (error) {
-            console.error('Could not export journal card:', error);
-            showToast('Could not download the Polaroid. Please try again.');
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error(`Could not export Polaroid for ${generationId}: ${errorMessage}`, error);
+            const isImagePermissionError = /cross[- ]origin|cors|taint|securityerror|failed to fetch/i.test(errorMessage);
+            showToast(isImagePermissionError
+                ? 'Could not export this image because its source blocks cross-origin access. Try re-uploading the photo or choosing a different image.'
+                : `Could not download the Polaroid: ${errorMessage}`);
         } finally {
             setDownloadingCard(null);
         }
     };
 
-    const handleReaction = async (generationId: string, type: 'hug') => {
+    const handleReaction = async (
+        generationId: string,
+        type: ReactionType,
+        currentStateOverride?: boolean,
+    ): Promise<boolean> => {
         if (!currentUser) {
             showToast('Please sign in to send a little support.');
-            return;
+            return false;
         }
 
         const stateKey = `${currentUser.id}:${generationId}`;
         const pendingKey = `${stateKey}:${type}`;
-        if (reactionLocks.current.has(pendingKey)) return;
+        if (reactionLocks.current.has(pendingKey)) return false;
 
-        const wasActive = reactions[stateKey]?.[type] ?? false;
+        const wasActive = currentStateOverride ?? reactions[stateKey]?.[type] ?? false;
         const delta = wasActive ? -1 : 1;
         const generation = generations.find((post) => post.id === generationId);
+        const baseCount = reactionCounts[generationId]?.[type] ?? generation?.[`${type}_count`] ?? 0;
         const updateCount = (amount: number) => {
             setReactionCounts((previous) => {
                 const current = previous[generationId] ?? {
@@ -848,8 +1135,9 @@ export default function Home() {
         setReactions((previous) => ({
             ...previous,
             [stateKey]: {
-                hug: !wasActive,
+                hug: previous[stateKey]?.hug ?? false,
                 coffee: previous[stateKey]?.coffee ?? false,
+                [type]: !wasActive,
             },
         }));
         updateCount(delta);
@@ -861,17 +1149,34 @@ export default function Home() {
                 Object.assign(error, result.error);
                 throw error;
             }
+            const confirmedDelta = result.action === 'added' ? 1 : -1;
+            const confirmedCount = Math.max(0, baseCount + confirmedDelta);
+            setReactionCounts((previous) => ({
+                ...previous,
+                [generationId]: {
+                    ...(previous[generationId] ?? { hug: 0, coffee: 0 }),
+                    [type]: confirmedCount,
+                },
+            }));
+            if (type === 'coffee') {
+                setGenerations((previous) => previous.map((post) =>
+                    post.id === generationId ? { ...post, coffee_count: confirmedCount } : post,
+                ));
+            }
+            return true;
         } catch (error) {
             console.error('Detailed reaction error:', error);
             setReactions((previous) => ({
                 ...previous,
                 [stateKey]: {
-                    hug: wasActive,
+                    hug: previous[stateKey]?.hug ?? false,
                     coffee: previous[stateKey]?.coffee ?? false,
+                    [type]: wasActive,
                 },
             }));
             updateCount(-delta);
             showToast('Your reaction could not be saved. Please try again.');
+            return false;
         } finally {
             reactionLocks.current.delete(pendingKey);
             setPendingReactions((previous) => {
@@ -882,12 +1187,16 @@ export default function Home() {
         }
     };
 
-    const loadComments = async (generationId: string) => {
+    const toggleComments = async (generationId: string) => {
+        const opening = !openComments[generationId];
+        setOpenComments((previous) => ({ ...previous, [generationId]: opening }));
+        if (!opening || commentsByGeneration[generationId]) return;
+
         setCommentsLoading((previous) => ({ ...previous, [generationId]: true }));
         try {
             const { data, error } = await supabase
                 .from('feed_comments')
-                .select('id, generation_id, content, created_at, author_name')
+                .select('id, generation_id, content, created_at, author_name, user_id')
                 .eq('generation_id', generationId)
                 .order('created_at', { ascending: true });
             if (error) throw error;
@@ -903,100 +1212,19 @@ export default function Home() {
         }
     };
 
-    const toggleComments = async (generationId: string) => {
-        const opening = !openComments[generationId];
-        setOpenComments((previous) => ({ ...previous, [generationId]: opening }));
-        if (opening) await loadComments(generationId);
-    };
-
-    const openCoffeeDialog = (generationId: string) => {
-        if (!currentUser) {
-            showToast('Please sign in to offer a coffee.');
-            return;
-        }
-        if (generations.find((post) => post.id === generationId)?.user_id === currentUser.id) {
-            showToast('Coffee offers are for supporting someone else’s post.');
-            return;
-        }
-        setCoffeeTarget(generationId);
-    };
-
-    const submitCoffeeOffer = async (platform: CoffeePlatform, account: string): Promise<string | null> => {
-        if (!coffeeTarget || !currentUser) return 'Please sign in again before sending your coffee offer.';
-        const generationId = coffeeTarget;
-        const userId = currentUser.id;
-        const result = await sendCoffeeOffer(generationId, platform, account);
-        if (!result.success) return result.error;
-        const stateKey = `${userId}:${generationId}`;
-        setReactions((previous) => ({
-            ...previous,
-            [stateKey]: { hug: previous[stateKey]?.hug ?? false, coffee: true },
-        }));
-        setReactionCounts((previous) => ({
-            ...previous,
-            [generationId]: { hug: previous[generationId]?.hug ?? 0, coffee: result.coffeeCount },
-        }));
-        setCommentsByGeneration((previous) => ({
-            ...previous,
-            [generationId]: [...(previous[generationId] ?? []).filter((comment) => comment.id !== result.comment.id), result.comment],
-        }));
-        if (!result.alreadySent) {
-            setCommentCounts((previous) => ({ ...previous, [generationId]: (previous[generationId] ?? 0) + 1 }));
-        }
-        setLocallyCommentedPosts((previous) => ({ ...previous, [generationId]: true }));
-        setOpenComments((previous) => ({ ...previous, [generationId]: true }));
-        try {
-            const { data, error } = await supabase.from('feed_comments')
-                .select('id, generation_id, content, created_at, author_name')
-                .eq('generation_id', generationId).order('created_at', { ascending: true });
-            if (!error && data) {
-                setCommentsByGeneration((previous) => ({ ...previous, [generationId]: data }));
-                setCommentCounts((previous) => ({ ...previous, [generationId]: data.length }));
-            }
-        } catch {
-            showToast('Your coffee offer is saved. Reopen comments to refresh other replies.');
-        }
-        showToast(result.alreadySent ? 'You already offered a coffee here. Your original comment is shown below.' : 'Coffee offered! Your contact is in the comments and the author has been notified.');
-        return null;
-    };
-
-    const openNotificationPost = (generationId: string) => {
-        const index = generations.findIndex((post) => post.id === generationId);
-        if (index === -1) {
-            showToast('This post is no longer available. Refresh the feed to check again.');
-            return;
-        }
-        setFeedTab('explore');
-        setFeedSort('latest');
-        setVisiblePostCount(Math.max(FEED_PAGE_SIZE, index + 1));
-        setNotificationTarget(generationId);
-        setOpenComments((previous) => ({ ...previous, [generationId]: true }));
-        void loadComments(generationId);
-    };
-
-    useEffect(() => {
-        if (!notificationTarget) return;
-        const frame = window.requestAnimationFrame(() => {
-            const post = document.getElementById(`feed-post-${notificationTarget}`);
-            post?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            post?.focus({ preventScroll: true });
-        });
-        return () => window.cancelAnimationFrame(frame);
-    }, [notificationTarget, visiblePostCount, feedTab, feedSort]);
-
-    const handlePostComment = async (targetId: string, commentText: string) => {
+    const handlePostComment = async (targetId: string, commentText: string): Promise<boolean> => {
         const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
         if (!targetId || !uuidPattern.test(targetId)) {
             console.error('Cannot post comment: generation_id is missing or is not a valid UUID.', targetId);
             alert('This reflection is not ready for comments yet. Please refresh and try again.');
-            return;
+            return false;
         }
 
         const content = commentText.trim();
-        if (!content) return;
+        if (!content) return false;
         if (!currentUser) {
             showToast('Please sign in to post a comment.');
-            return;
+            return false;
         }
 
         setCommentPosting((previous) => ({ ...previous, [targetId]: true }));
@@ -1007,7 +1235,6 @@ export default function Home() {
             created_at: new Date().toISOString(),
             author_name: 'Anonymous Morningsider',
         };
-        const author = 'Anonymous Morningsider';
         setCommentsByGeneration((previous) => ({
             ...previous,
             [targetId]: [...(previous[targetId] ?? []), optimisticComment],
@@ -1019,19 +1246,9 @@ export default function Home() {
         setCommentDrafts((previous) => ({ ...previous, [targetId]: '' }));
 
         try {
-            const { data, error } = await supabase
-                .from('feed_comments')
-                .insert([{
-                    generation_id: targetId,
-                    content,
-                    author_name: author || 'Anonymous Lion',
-                }])
-                .select();
-            if (error) throw error;
-            const insertedComment = data[0] as FeedComment | undefined;
-            if (!insertedComment) {
-                throw new Error('The comment was accepted but no saved comment was returned.');
-            }
+            const result = await postFeedComment(targetId, content);
+            if (!result.success) throw new Error(result.error.message);
+            const insertedComment = result.comment as FeedComment;
 
             setCommentsByGeneration((previous) => ({
                 ...previous,
@@ -1050,6 +1267,7 @@ export default function Home() {
             } catch (error) {
                 console.error('Could not persist replied-to post state:', error);
             }
+            return true;
         } catch (error) {
             console.error('Failed to post comment:', error);
             setCommentsByGeneration((previous) => ({
@@ -1066,8 +1284,131 @@ export default function Home() {
             const message = error instanceof Error ? error.message : 'Your comment could not be posted.';
             showToast(message);
             alert(message);
+            return false;
         } finally {
             setCommentPosting((previous) => ({ ...previous, [targetId]: false }));
+        }
+    };
+
+    const handleCoffeeOfferSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        const generationId = coffeeOfferGenerationId;
+        const handle = coffeeSocialHandle.trim();
+        if (!generationId || !handle) {
+            setCoffeeOfferError('Please enter your social handle before sending the coffee offer.');
+            return;
+        }
+        if (!currentUser) {
+            setCoffeeOfferError('Please sign in before sending a coffee offer.');
+            return;
+        }
+
+        setCoffeeOfferSubmitting(true);
+        setCoffeeOfferError(null);
+        const stateKey = `${currentUser.id}:${generationId}`;
+        const alreadyCoffeeReacted = reactions[stateKey]?.coffee ?? false;
+        let addedCoffeeReaction = false;
+
+        try {
+            if (!alreadyCoffeeReacted) {
+                addedCoffeeReaction = await handleReaction(generationId, 'coffee');
+                if (!addedCoffeeReaction) return;
+            }
+
+            const posted = await handlePostComment(
+                generationId,
+                `☕ Bought you a coffee! Reach me on ${coffeeSocialPlatform}: ${handle}`,
+            );
+            if (!posted) {
+                if (addedCoffeeReaction) {
+                    await handleReaction(generationId, 'coffee', true);
+                }
+                setCoffeeOfferError('The coffee offer could not be posted. Please try again.');
+                return;
+            }
+
+            await fetchGenerations(false);
+            try {
+                await refreshCoffeeCount(generationId);
+            } catch (error) {
+                console.error('Coffee offer succeeded, but its database count could not be refreshed:', error);
+                showToast('Coffee offer sent, but the latest count could not be loaded. Refresh the feed to retry.');
+            }
+            setOpenComments((previous) => ({ ...previous, [generationId]: true }));
+            setCoffeeOfferGenerationId(null);
+            setCoffeeSocialHandle('');
+            setCoffeeOfferError(null);
+        } catch (error) {
+            console.error('Could not complete the coffee offer:', error);
+            setCoffeeOfferError('The coffee offer could not be completed. Please try again.');
+        } finally {
+            setCoffeeOfferSubmitting(false);
+        }
+    };
+
+    const handleCancelCoffee = async (generationId: string) => {
+        if (!currentUser) {
+            showToast('Please sign in to cancel your coffee offer.');
+            return;
+        }
+        if (!window.confirm('Cancel your coffee offer? This will remove your coffee reaction and offer comment.')) {
+            return;
+        }
+
+        setPendingReactions((previous) => ({
+            ...previous,
+            [`${currentUser.id}:${generationId}:coffee`]: true,
+        }));
+        try {
+            const { data: comment, error: commentError } = await supabase
+                .from('feed_comments')
+                .select('id')
+                .eq('generation_id', generationId)
+                .eq('user_id', currentUser.id)
+                .like('content', '☕ Bought you a coffee!%')
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (commentError) throw commentError;
+            if (!comment) {
+                throw new Error('Your coffee offer comment could not be found. Only offers created with this account can be cancelled.');
+            }
+
+            const result = await cancelCoffeeOffer(generationId, comment.id);
+            if (!result.success) {
+                throw new Error(result.error.message);
+            }
+
+            const stateKey = `${currentUser.id}:${generationId}`;
+            setReactions((previous) => ({
+                ...previous,
+                [stateKey]: { ...previous[stateKey], coffee: false },
+            }));
+            setCommentsByGeneration((previous) => ({
+                ...previous,
+                [generationId]: (previous[generationId] ?? []).filter(
+                    (entry) => entry.id !== comment.id,
+                ),
+            }));
+            setCommentCounts((previous) => ({
+                ...previous,
+                [generationId]: Math.max(0, (previous[generationId] ?? 1) - 1),
+            }));
+            try {
+                await refreshCoffeeCount(generationId);
+            } catch (error) {
+                console.error('Coffee offer was cancelled, but its count could not be refreshed:', error);
+                showToast('Coffee offer cancelled, but the latest count could not be loaded. Refresh the feed to retry.');
+            }
+        } catch (error) {
+            console.error('Could not cancel coffee offer:', error);
+            showToast(error instanceof Error ? error.message : 'Could not cancel your coffee offer.');
+        } finally {
+            setPendingReactions((previous) => {
+                const next = { ...previous };
+                delete next[`${currentUser.id}:${generationId}:coffee`];
+                return next;
+            });
         }
     };
 
@@ -1104,7 +1445,7 @@ export default function Home() {
                                             {relativeTime(comment.created_at)}
                                         </time>
                                     </div>
-                                    <p className="break-words text-sm text-stone-700 dark:text-stone-200">{comment.content}</p>
+                                    <p className="text-sm text-stone-700 dark:text-stone-200">{comment.content}</p>
                                 </div>
                             ))}
                             {commentsByGeneration[generationId]?.length === 0 && (
@@ -1158,6 +1499,102 @@ export default function Home() {
                     <span className="text-sm font-semibold">{toastMessage}</span>
                 </div>
             )}
+            {coffeeOfferGenerationId && (
+                <div
+                    className="fixed inset-0 z-[60] flex items-center justify-center bg-stone-950/55 p-4 backdrop-blur-sm"
+                    onClick={(event) => {
+                        if (event.target === event.currentTarget && !coffeeOfferSubmitting) {
+                            setCoffeeOfferGenerationId(null);
+                            setCoffeeOfferError(null);
+                        }
+                    }}
+                >
+                    <section
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="coffee-offer-title"
+                        className="w-full max-w-md rounded-3xl border border-[#E8E1D8] bg-[#FDFAF6] p-6 text-stone-800 shadow-2xl dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
+                    >
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <h2 id="coffee-offer-title" className="font-serif text-2xl font-semibold">
+                                    Send a coffee their way ☕
+                                </h2>
+                                <p className="mt-2 text-sm leading-relaxed text-stone-600 dark:text-stone-300">
+                                    Share where the post author can reach you. We’ll add your offer as a comment on their post.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                aria-label="Close coffee offer"
+                                disabled={coffeeOfferSubmitting}
+                                onClick={() => {
+                                    setCoffeeOfferGenerationId(null);
+                                    setCoffeeOfferError(null);
+                                }}
+                                className="rounded-full px-2 py-1 text-xl leading-none text-stone-500 hover:bg-stone-100 disabled:opacity-50 dark:hover:bg-stone-800"
+                            >
+                                ×
+                            </button>
+                        </div>
+                        <form className="mt-5 space-y-4" onSubmit={(event) => void handleCoffeeOfferSubmit(event)}>
+                            <label className="block">
+                                <span className="mb-1.5 block text-sm font-semibold">Social platform</span>
+                                <select
+                                    value={coffeeSocialPlatform}
+                                    onChange={(event) => setCoffeeSocialPlatform(event.target.value as SocialPlatform)}
+                                    className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600 dark:border-stone-700 dark:bg-stone-950"
+                                >
+                                    <option>WeChat</option>
+                                    <option>Instagram</option>
+                                    <option>LinkedIn</option>
+                                    <option>Facebook</option>
+                                </select>
+                            </label>
+                            <label className="block">
+                                <span className="mb-1.5 block text-sm font-semibold">Your handle or account</span>
+                                <input
+                                    autoFocus
+                                    value={coffeeSocialHandle}
+                                    onChange={(event) => {
+                                        setCoffeeSocialHandle(event.target.value);
+                                        if (coffeeOfferError) setCoffeeOfferError(null);
+                                    }}
+                                    maxLength={100}
+                                    required
+                                    placeholder="@yourhandle"
+                                    className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-emerald-600 dark:border-stone-700 dark:bg-stone-950"
+                                />
+                            </label>
+                            {coffeeOfferError && (
+                                <p role="alert" className="text-sm font-medium text-rose-700 dark:text-rose-300">
+                                    {coffeeOfferError}
+                                </p>
+                            )}
+                            <div className="flex justify-end gap-3 pt-1">
+                                <button
+                                    type="button"
+                                    disabled={coffeeOfferSubmitting}
+                                    onClick={() => {
+                                        setCoffeeOfferGenerationId(null);
+                                        setCoffeeOfferError(null);
+                                    }}
+                                    className="rounded-xl border border-stone-300 px-4 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-100 disabled:opacity-50 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={coffeeOfferSubmitting || !coffeeSocialHandle.trim()}
+                                    className="rounded-xl bg-amber-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-900 disabled:cursor-wait disabled:opacity-60"
+                                >
+                                    {coffeeOfferSubmitting ? 'Sending…' : 'Send coffee offer'}
+                                </button>
+                            </div>
+                        </form>
+                    </section>
+                </div>
+            )}
 
             <header className="mx-auto mb-10 flex max-w-3xl flex-wrap items-center justify-between gap-4 border-b border-[#DCE9E0] pb-5 dark:border-stone-800">
                 <div>
@@ -1182,7 +1619,6 @@ export default function Home() {
                                     Admin Panel
                                 </Link>
                             )}
-                            <CoffeeNotifications key={currentUser.id} userId={currentUser.id} onOpenPost={openNotificationPost} />
                             <SignOutButton />
                         </div>
                     ) : (
@@ -1190,15 +1626,6 @@ export default function Home() {
                     )}
                 </div>
             </header>
-
-            {coffeeTarget && currentUser && (
-                <CoffeeOfferDialog
-                    key={coffeeTarget}
-                    onClose={() => setCoffeeTarget(null)}
-                    onSubmit={submitCoffeeOffer}
-                />
-            )}
-            <AmbientSoundControl />
 
             <section className="mx-auto mb-10 max-w-3xl">
                 <div className="mb-7 px-1 text-center sm:mb-9">
@@ -1440,6 +1867,99 @@ export default function Home() {
                         </div>
                     </div>
 
+                    <section className="mt-5 rounded-2xl border border-[#DCE8DF] bg-[#F8FBF9] p-4 sm:p-5 dark:border-stone-700 dark:bg-stone-950" aria-labelledby="choose-vibe-title">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                                <h3 id="choose-vibe-title" className="font-serif text-base font-semibold text-[#2D3748] dark:text-stone-100 sm:text-lg">
+                                    Invite Roaree into your moment 🐾
+                                </h3>
+                                <p className="mt-1 max-w-2xl text-xs leading-relaxed text-stone-600 dark:text-stone-400 sm:text-sm">
+                                    Share a desk, library, favorite campus spot, or quiet view—Roaree will join you.
+                                </p>
+                            </div>
+                            {vibeImage && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setVibeImage(null);
+                                        setVibeImageName(null);
+                                        setVibeImageError(null);
+                                    }}
+                                    className="rounded-full px-3 py-1.5 text-xs font-semibold text-stone-600 transition hover:bg-stone-200/70 hover:text-stone-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white"
+                                >
+                                    Remove photo
+                                </button>
+                            )}
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                            <label
+                                className="relative inline-flex cursor-pointer items-center gap-2 overflow-hidden rounded-full border border-emerald-200 bg-[#E8F4EC] px-4 py-2.5 text-sm font-semibold text-[#365B48] shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 focus-within:ring-2 focus-within:ring-emerald-600 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-100 dark:hover:bg-emerald-900"
+                            >
+                                📸 {vibeImage ? 'Change Photo' : 'Choose a Photo'}
+                                <input
+                                    type="file"
+                                    accept="image/jpeg,image/png,.jpg,.jpeg,.png"
+                                    onChange={(event) => void handleVibeImageChange(event)}
+                                    disabled={loading}
+                                    aria-label="Choose a JPG or PNG photo"
+                                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                                />
+                            </label>
+                            <span className="max-w-full truncate text-xs text-stone-500 dark:text-stone-400" title={vibeImageName ?? undefined}>
+                                {vibeImageName || 'JPG or PNG · up to 10 MB · stays on your device'}
+                            </span>
+                        </div>
+                        {vibeImageError && (
+                            <p className="mt-2 text-sm text-rose-700 dark:text-rose-300" role="alert">
+                                {vibeImageError}
+                            </p>
+                        )}
+                        {vibeImage && (
+                            <div className="mx-auto mt-4 w-full max-w-[320px]">
+                                <div className="relative mx-auto aspect-[3/4] w-full max-w-[240px] overflow-hidden rounded-2xl border border-stone-300/80 bg-stone-200 shadow-inner dark:border-stone-700">
+                                    <img src={vibeImage} alt="Your uploaded photo preview" data-fit="cover" className="absolute inset-0 h-full w-full rounded-2xl object-cover" />
+                                    <LionSticker
+                                        position={stickerPosition}
+                                        onPointerDown={handleStickerPointerDown}
+                                        onPointerMove={handleStickerPointerMove}
+                                        onPointerUp={handleStickerPointerUp}
+                                    />
+                                </div>
+                                <div className="mt-3 grid gap-2 sm:grid-cols-2 sm:gap-3">
+                                    <p className="text-xs leading-relaxed text-stone-600 dark:text-stone-400 sm:col-span-2">
+                                        Drag Roaree anywhere in the photo, then fine-tune the size and angle.
+                                    </p>
+                                    <label className="text-xs font-medium text-stone-700 dark:text-stone-300">
+                                        Lion size
+                                        <input
+                                            type="range"
+                                            min="0.6"
+                                            max="1.6"
+                                            step="0.05"
+                                            value={stickerPosition.scale}
+                                            onChange={(event) => setStickerPosition((position) => ({ ...position, scale: Number(event.target.value) }))}
+                                            className="mt-1 block w-full accent-[#5F937B]"
+                                            aria-label="Lion size"
+                                        />
+                                    </label>
+                                    <label className="text-xs font-medium text-stone-700 dark:text-stone-300">
+                                        Lion rotation
+                                        <input
+                                            type="range"
+                                            min="-45"
+                                            max="45"
+                                            step="1"
+                                            value={stickerPosition.rotation}
+                                            onChange={(event) => setStickerPosition((position) => ({ ...position, rotation: Number(event.target.value) }))}
+                                            className="mt-1 block w-full accent-[#5F937B]"
+                                            aria-label="Lion rotation"
+                                        />
+                                    </label>
+                                </div>
+                            </div>
+                        )}
+                    </section>
+
                     <div className="mt-6 grid gap-6 sm:grid-cols-2">
                         <div>
                             <div className="mb-2 flex items-center justify-between">
@@ -1535,8 +2055,6 @@ export default function Home() {
 
             {latestReflection && (() => {
                 const content = getJournalContent(latestReflection.output_text);
-                const quoteSourceMatch = latestReflection.stoic_quote?.match(/^(.*)\s+—\s+(Meditations[\s\S]*)$/);
-
                 return (
                     <section
                         ref={latestReflectionRef}
@@ -1590,64 +2108,40 @@ export default function Home() {
                                     </div>
                                 </div>
                             ) : null}
-                            <div className="mx-auto mt-7 max-w-md rounded-sm border border-stone-200/80 bg-[#FDFBF7] p-5 pb-8 text-stone-800 shadow-2xl">
-                                <div id={`journal-card-latest-${latestReflection.id}`}>
-                                    <div className="flex items-start justify-between gap-3 font-serif text-xs text-stone-600">
-                                        <div>
-                                            <p className="font-semibold text-stone-900">
-                                                {content.author_name || currentUser?.user_metadata.full_name || 'Your journal'}
-                                            </p>
-                                            <p className="mt-1">📍 {content.location || location || 'Morningside'}</p>
-                                        </div>
-                                        <time dateTime={latestReflection.created_at} className="text-right">
-                                            {formatEnglishDate(latestReflection.created_at)}
-                                        </time>
-                                    </div>
-                                    <div className="my-4 overflow-hidden rounded-sm border border-stone-300/70">
-                                        <PostImage
-                                            key={`${latestReflection.id}:${latestReflection.imageUrl ?? latestReflection.image_url ?? ''}`}
-                                            src={
-                                                latestReflection.imageUrl ||
-                                                latestReflection.image_url ||
-                                                content.image_url ||
-                                                createPostImageUrl(
-                                                    latestReflection.image_prompt || content.image_prompt || latestReflection.prompt,
-                                                    latestReflection.id,
-                                                    new Date(latestReflection.created_at).getTime(),
-                                                )
-                                            }
-                                            preloaded={latestReflection.imagePreloaded}
-                                            alt={latestReflection.stoic_quote || 'Reflection illustration'}
-                                        />
-                                    </div>
-                                    <span className="mb-3 inline-flex rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900">
-                                        🔥 Stress: {latestReflection.stress_level ?? stressLevel}/10
-                                    </span>
-                                    {latestReflection.stoic_quote && (
-                                        <blockquote className="border-l-2 border-amber-700/50 pl-3">
-                                            <p className="font-serif text-sm italic leading-relaxed text-stone-800">
-                                                “{quoteSourceMatch?.[1] ?? latestReflection.stoic_quote}”
-                                            </p>
-                                            <cite className="mt-2 block text-xs font-semibold not-italic uppercase tracking-[0.12em] text-amber-800">
-                                                {quoteSourceMatch?.[2] ?? 'Marcus Aurelius · Meditations'}
-                                            </cite>
-                                        </blockquote>
-                                    )}
-                                    <p className="mt-4 font-serif text-sm leading-relaxed text-stone-700">{content.analysis}</p>
-                                </div>
-                                <button
-                                    type="button"
-                                    onClick={() =>
-                                        void handleDownloadCard(
+                            <div className="mx-auto mt-7 max-w-3xl">
+                                <VentCard
+                                    id={`journal-card-latest-${latestReflection.id}`}
+                                    author={content.author_name || currentUser?.user_metadata.full_name || 'Your journal'}
+                                    location={content.location || location || 'Morningside'}
+                                    dateLabel={formatEnglishDate(latestReflection.created_at)}
+                                    prompt={latestReflection.prompt}
+                                    analysis={content.analysis}
+                                    stressLevel={latestReflection.stress_level ?? stressLevel}
+                                    stoicQuote={latestReflection.stoic_quote}
+                                    image={
+                                        latestReflection.imageUrl ||
+                                        latestReflection.image_url ||
+                                        content.image_url ||
+                                        createPostImageUrl(
+                                            latestReflection.image_prompt || content.image_prompt || latestReflection.prompt,
                                             latestReflection.id,
-                                            `journal-card-latest-${latestReflection.id}`,
+                                            new Date(latestReflection.created_at).getTime(),
                                         )
                                     }
-                                    disabled={downloadingCard === latestReflection.id}
-                                    className="mt-3 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60"
-                                >
-                                    {downloadingCard === latestReflection.id ? 'Preparing image...' : '📸 Download Polaroid (PNG)'}
-                                </button>
+                                    imageAlt={latestReflection.userImage
+                                        ? 'Your uploaded photo with Roaree'
+                                        : latestReflection.stoic_quote || 'Reflection illustration'}
+                                    imagePreloaded={latestReflection.imagePreloaded}
+                                    userImage={latestReflection.userImage}
+                                    stickerPosition={latestReflection.stickerPosition}
+                                    copingSteps={getCopingSteps(content.coping_action)}
+                                    actions={content.actions}
+                                    downloading={downloadingCard === latestReflection.id}
+                                    onDownload={() => void handleDownloadCard(
+                                        latestReflection.id,
+                                        `journal-card-latest-${latestReflection.id}`,
+                                    )}
+                                />
                             </div>
                             {renderCommentsSection(latestReflection.id)}
                         </article>
@@ -1700,6 +2194,15 @@ export default function Home() {
                         <p className="mt-1 text-sm text-stone-600 dark:text-stone-400">
                             A little perspective, and a reminder you’re not alone.
                         </p>
+                        {localPosts.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={clearSavedLocalPosts}
+                                className="mt-2 text-xs font-semibold text-stone-500 underline decoration-stone-300 underline-offset-2 transition hover:text-rose-700 dark:text-stone-400 dark:hover:text-rose-300"
+                            >
+                                Clear {localPosts.length} locally saved {localPosts.length === 1 ? 'post' : 'posts'}
+                            </button>
+                        )}
                     </div>
                     <div className="flex items-center gap-2">
                     <div className="flex rounded-xl border border-stone-200 bg-white p-1 dark:border-stone-800 dark:bg-stone-900">
@@ -1878,10 +2381,8 @@ export default function Home() {
                     <div className="space-y-5">
                         {visibleGenerations.map((post) => {
                             const item = post;
+                            const uploadedPhoto = getUserUploadedImage(item);
                             const content = getJournalContent(item.output_text);
-                            const quoteSourceMatch = item.stoic_quote?.match(/^(.*)\s+—\s+(Meditations[\s\S]*)$/);
-                            const quoteText = quoteSourceMatch?.[1] ?? item.stoic_quote;
-                            const quoteSource = quoteSourceMatch?.[2] ?? 'Marcus Aurelius · Meditations';
                             const journalLocation = content.location || 'Morningside';
                             const reactedHug = generationCardContent(item.id, 'hug');
                             const reactedCoffee = generationCardContent(item.id, 'coffee');
@@ -1890,121 +2391,34 @@ export default function Home() {
                             const hugCount = reactionCounts[item.id]?.hug ?? item.hug_count ?? 0;
                             const coffeeCount = reactionCounts[item.id]?.coffee ?? item.coffee_count ?? 0;
                             const hugPendingKey = `${currentUser?.id ?? 'anonymous'}:${item.id}:hug`;
+                            const coffeePendingKey = `${currentUser?.id ?? 'anonymous'}:${item.id}:coffee`;
 
                             return (
                                 <article
                                     key={item.id}
-                                    id={`feed-post-${item.id}`}
-                                    tabIndex={-1}
-                                    className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm transition hover:shadow-md dark:border-stone-800 dark:bg-stone-900 sm:p-6"
+                                    className="rounded-2xl border border-stone-200 bg-[#FDFAF6] p-4 shadow-sm transition hover:shadow-md dark:border-stone-800 dark:bg-stone-900 sm:p-5"
                                 >
-                                    <div className="mb-4 flex flex-wrap items-center gap-2">
-                                        <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-semibold text-stone-700 dark:bg-stone-800 dark:text-stone-300">
-                                            Anonymous · Morningside student
-                                        </span>
-                                        <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200">
-                                            📍 {journalLocation}
-                                        </span>
-                                        {item.stress_level != null && (
-                                            <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                                                ⚡ Stress: {item.stress_level}/10
-                                            </span>
-                                        )}
-                                    </div>
-
-                                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-stone-500 dark:text-stone-400">
-                                        A student’s vent
-                                    </p>
-                                    <p className="mb-4 text-sm leading-relaxed text-stone-600 dark:text-stone-300">
-                                        {item.prompt.length > 180 ? `${item.prompt.slice(0, 180).trimEnd()}…` : item.prompt}
-                                    </p>
-                                    <p className="whitespace-pre-wrap font-serif text-xl leading-relaxed text-stone-900 dark:text-stone-100">
-                                        {content.analysis}
-                                    </p>
-
-                                    {getCopingSteps(content.coping_action).length > 0 ? (
-                                        <div className="my-5 rounded-xl border border-[#E0EBE3] bg-[#F8FBF9] p-3 dark:border-stone-800 dark:bg-stone-950">
-                                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                                <h3 className="text-xs font-bold uppercase tracking-wide text-[#365B48] dark:text-emerald-200">
-                                                    🌱 1-Minute Grounding Action
-                                                </h3>
-                                                <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                                                    ⚡ 60s Micro-Task
-                                                </span>
-                                            </div>
-                                            <ol className="mt-2 space-y-1.5">
-                                                {getCopingSteps(content.coping_action).map((step, index) => (
-                                                    <li key={`${index}-${step}`} className="flex gap-2 text-sm leading-relaxed text-stone-700 dark:text-stone-300">
-                                                        <span className="shrink-0 font-semibold text-[#5F937B] dark:text-emerald-300">
-                                                            Step {index + 1}:
-                                                        </span>
-                                                        <span>{step}</span>
-                                                    </li>
-                                                ))}
-                                            </ol>
-                                        </div>
-                                    ) : content.actions ? (
-                                        <div className="my-5 grid gap-3 sm:grid-cols-3">
-                                            <div className="rounded-xl bg-stone-50 p-3 dark:bg-stone-950">
-                                                <h3 className="mb-1 text-xs font-semibold text-stone-800 dark:text-stone-100">◉ 1-minute reset</h3>
-                                                <p className="text-sm text-stone-600 dark:text-stone-300">{content.actions.meditation}</p>
-                                            </div>
-                                            <div className="rounded-xl bg-stone-50 p-3 dark:bg-stone-950">
-                                                <h3 className="mb-1 text-xs font-semibold text-stone-800 dark:text-stone-100">↗ 3-minute walk</h3>
-                                                <p className="text-sm text-stone-600 dark:text-stone-300">{content.actions.walk}</p>
-                                            </div>
-                                            <div className="rounded-xl bg-stone-50 p-3 dark:bg-stone-950">
-                                                <h3 className="mb-1 text-xs font-semibold text-stone-800 dark:text-stone-100">✧ Nearby anchor</h3>
-                                                <p className="text-sm text-stone-600 dark:text-stone-300">{content.actions.nearby_anchor}</p>
-                                            </div>
-                                        </div>
-                                    ) : null}
-
-                                    <div className="mx-auto my-6 max-w-md rounded-sm border border-stone-200/80 bg-[#FDFBF7] p-5 pb-8 text-stone-800 shadow-2xl">
-                                        <div id={`journal-card-${item.id}`}>
-                                            <div className="flex items-start justify-between gap-3 font-serif text-xs text-stone-600">
-                                                <div>
-                                                    <p className="font-semibold text-stone-900">Anonymous</p>
-                                                    <p className="mt-1">📍 {journalLocation}</p>
-                                                </div>
-                                                <time dateTime={item.created_at} className="text-right">
-                                                    {formatEnglishDate(item.created_at)}
-                                                </time>
-                                            </div>
-                                            <div className="my-4 overflow-hidden rounded-sm border border-stone-300/70">
-                                                <PostImage
-                                                    key={`${post.id}:${post.imageUrl}`}
-                                                    src={post.imageUrl}
-                                                    preloaded={post.imagePreloaded}
-                                                    alt={post.stoic_quote || 'Reflection illustration'}
-                                                />
-                                            </div>
-                                            <div className="mb-3 flex flex-wrap gap-2">
-                                                <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900">
-                                                    🔥 Stress: {item.stress_level ?? '—'}/10
-                                                </span>
-                                            </div>
-                                            {item.stoic_quote && (
-                                                <blockquote className="border-l-2 border-amber-700/50 pl-3">
-                                                    <p className="font-serif text-sm italic leading-relaxed text-stone-800">
-                                                        “{quoteText}”
-                                                    </p>
-                                                    <cite className="mt-2 block text-xs font-semibold not-italic uppercase tracking-[0.12em] text-amber-800">
-                                                        {quoteSource}
-                                                    </cite>
-                                                </blockquote>
-                                            )}
-                                            <p className="mt-4 font-serif text-sm leading-relaxed text-stone-700">{content.analysis}</p>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => void handleDownloadCard(item.id)}
-                                            disabled={downloadingCard === item.id}
-                                            className="mt-3 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60"
-                                        >
-                                            {downloadingCard === item.id ? 'Preparing image...' : '📸 Download Polaroid (PNG)'}
-                                        </button>
-                                    </div>
+                                    <VentCard
+                                        id={`journal-card-${item.id}`}
+                                        author="Anonymous · Morningside student"
+                                        location={journalLocation}
+                                        dateLabel={formatEnglishDate(item.created_at)}
+                                        prompt={item.prompt}
+                                        analysis={content.analysis}
+                                        stressLevel={item.stress_level}
+                                        stoicQuote={item.stoic_quote}
+                                        image={post.imageUrl}
+                                        imageAlt={uploadedPhoto
+                                            ? 'A community photo with Roaree'
+                                            : item.stoic_quote || 'Reflection illustration'}
+                                        imagePreloaded={post.imagePreloaded}
+                                        userImage={uploadedPhoto}
+                                        stickerPosition={item.stickerPosition}
+                                        copingSteps={getCopingSteps(content.coping_action)}
+                                        actions={content.actions}
+                                        downloading={downloadingCard === item.id}
+                                        onDownload={() => void handleDownloadCard(item.id)}
+                                    />
 
                                     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-stone-100 pt-4 dark:border-stone-800">
                                         <time dateTime={item.created_at} className="text-xs text-stone-500 dark:text-stone-400">
@@ -2032,9 +2446,18 @@ export default function Home() {
                                             </button>
                                             <button
                                                 type="button"
-                                                onClick={() => openCoffeeDialog(item.id)}
-                                                aria-haspopup="dialog"
-                                                title="Offer a coffee and share your social media account"
+                                                onClick={() => {
+                                                    if (!currentUser) {
+                                                        showToast('Please sign in to send a coffee offer.');
+                                                        return;
+                                                    }
+                                                    setCoffeeSocialHandle('');
+                                                    setCoffeeOfferError(null);
+                                                    setCoffeeOfferGenerationId(item.id);
+                                                }}
+                                                disabled={pendingReactions[coffeePendingKey] || coffeeOfferSubmitting}
+                                                aria-pressed={hasCoffeed}
+                                                title="Send a tactical coffee boost: You'll pull through tonight!"
                                                 className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:cursor-wait disabled:opacity-70 ${
                                                     hasCoffeed
                                                         ? 'border-amber-800 bg-amber-900 text-amber-50 ring-2 ring-amber-200 dark:border-amber-500 dark:bg-amber-950 dark:text-amber-100'
@@ -2048,6 +2471,16 @@ export default function Home() {
                                                         : 'bg-amber-100 text-amber-900 dark:bg-amber-900 dark:text-amber-100'
                                                 }`}>{coffeeCount}</span>
                                             </button>
+                                            {hasCoffeed && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleCancelCoffee(item.id)}
+                                                    disabled={pendingReactions[coffeePendingKey]}
+                                                    className="rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-50 disabled:cursor-wait disabled:opacity-60 dark:border-rose-900 dark:bg-stone-900 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                                                >
+                                                    Cancel Coffee
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
                                     {renderCommentsSection(item.id)}

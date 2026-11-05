@@ -3,6 +3,25 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createClient } from '@/lib/server';
 
 export const maxDuration = 60;
+const MAX_USER_IMAGE_DATA_URL_LENGTH = 8 * 1024 * 1024;
+
+interface StickerPosition {
+    x: number;
+    y: number;
+    scale: number;
+    rotation: number;
+}
+
+function isStickerPosition(value: unknown): value is StickerPosition {
+    if (typeof value !== 'object' || value === null) return false;
+    const position = value as Record<string, unknown>;
+    return (
+        typeof position.x === 'number' && Number.isFinite(position.x) &&
+        typeof position.y === 'number' && Number.isFinite(position.y) &&
+        typeof position.scale === 'number' && Number.isFinite(position.scale) &&
+        typeof position.rotation === 'number' && Number.isFinite(position.rotation)
+    );
+}
 
 type GeneratedContent = {
     quote: {
@@ -279,12 +298,16 @@ export async function POST(req: Request) {
             stress_level: stressLevel,
             tone: requestedTone,
             tone_type: storedTone,
+            userImage,
+            stickerPosition,
         } = body as {
             prompt?: unknown;
             location?: unknown;
             stress_level?: unknown;
             tone?: unknown;
             tone_type?: unknown;
+            userImage?: unknown;
+            stickerPosition?: unknown;
         };
         const toneType = requestedTone ?? storedTone;
 
@@ -307,6 +330,26 @@ export async function POST(req: Request) {
 
         if (toneType !== 'gentle' && toneType !== 'roast') {
             return NextResponse.json({ error: "Tone type must be 'gentle' or 'roast'." }, { status: 400 });
+        }
+
+        if (
+            userImage !== undefined &&
+            userImage !== null &&
+            (
+                typeof userImage !== 'string' ||
+                userImage.length > MAX_USER_IMAGE_DATA_URL_LENGTH ||
+                !/^data:image\/(?:jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/.test(userImage)
+            )
+        ) {
+            return NextResponse.json({ error: 'Uploaded photo must be a JPG or PNG data URL smaller than 8 MB.' }, { status: 400 });
+        }
+
+        if (
+            stickerPosition !== undefined &&
+            stickerPosition !== null &&
+            !isStickerPosition(stickerPosition)
+        ) {
+            return NextResponse.json({ error: 'Mascot position is invalid.' }, { status: 400 });
         }
 
         const toneInstructions =
@@ -419,6 +462,8 @@ ${JSON.stringify({ location: typeof location === 'string' ? location.trim() : 'N
             image_fallback: imageFallback,
             location: typeof location === 'string' ? location.trim() : 'Morningside',
             author_name: authorName,
+            ...(typeof userImage === 'string' ? { userImage } : {}),
+            ...(isStickerPosition(stickerPosition) ? { stickerPosition } : {}),
         });
 
         const { data: insertedGeneration, error: dbError } = await supabase

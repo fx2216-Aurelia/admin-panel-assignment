@@ -17,6 +17,9 @@ interface Generation {
 interface MediaContent {
     analysis?: string;
     image_url?: string;
+    imageUrl?: string;
+    userImage?: string;
+    userUploadedImage?: string;
     author_name?: string;
     [key: string]: unknown;
 }
@@ -41,7 +44,16 @@ function getMediaContent(outputText: string): MediaContent {
 }
 
 function getImageUrl(post: Generation, content: MediaContent): string {
-    return post.image_url || content.image_url || '';
+    return getUserImage(content) || content.imageUrl || post.image_url || content.image_url || '';
+}
+
+function getUserImage(content: MediaContent): string {
+    const image = content.userImage || content.userUploadedImage;
+    return typeof image === 'string' ? image : '';
+}
+
+function getGeneratedImageUrl(post: Generation, content: MediaContent): string {
+    return content.imageUrl || post.image_url || content.image_url || '';
 }
 
 function getAuthor(content: MediaContent, userId: string): string {
@@ -143,7 +155,7 @@ export default function AdminMediaManagement({ userId }: AdminMediaManagementPro
         setEditingPost(post);
         setVentText(post.prompt);
         setCopingResponse(typeof content.analysis === 'string' ? content.analysis : '');
-        setImageUrl(getImageUrl(post, content));
+        setImageUrl(getGeneratedImageUrl(post, content));
         setModalError(null);
         setModalOpen(true);
     };

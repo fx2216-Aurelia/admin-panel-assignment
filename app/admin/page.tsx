@@ -1,5 +1,6 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import Link from 'next/link';
 import AdminDashboardTabs, { type AdminProfile } from './components/AdminDashboardTabs';
 
 export default async function AdminPage() {
@@ -65,9 +66,18 @@ export default async function AdminPage() {
                             </span>
                         </div>
                     </div>
-                    <span className="rounded-full border border-[#f2d8dc] bg-[#fbf0f1] px-4 py-2 text-sm font-semibold text-[#b4656f]">
-                        Superadmin
-                    </span>
+                    <div className="flex flex-wrap items-center gap-3">
+                        <Link
+                            href="/"
+                            className="inline-flex items-center gap-2 rounded-xl border border-[#cbd9ce] bg-white px-4 py-2 text-sm font-semibold text-[#3d614e] shadow-sm transition hover:bg-[#eef4f0] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5b8a70]"
+                        >
+                            <span aria-hidden="true">←</span>
+                            Back to App
+                        </Link>
+                        <span className="rounded-full border border-[#f2d8dc] bg-[#fbf0f1] px-4 py-2 text-sm font-semibold text-[#b4656f]">
+                            Superadmin
+                        </span>
+                    </div>
                 </header>
                 <AdminDashboardTabs userId={user.id} profiles={(profiles ?? []) as AdminProfile[]} />
             </div>

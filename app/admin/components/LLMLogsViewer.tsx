@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { createClient } from '@/utils/supabase/client';
 
 interface GenerationLog {
     id: string;
@@ -13,6 +13,7 @@ interface GenerationLog {
 const LOG_LIMIT = 100;
 
 export default function LLMLogsViewer() {
+    const [supabase] = useState(() => createClient());
     const [logs, setLogs] = useState<GenerationLog[]>([]);
     const [loading, setLoading] = useState(true);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -20,18 +21,23 @@ export default function LLMLogsViewer() {
     const load = useCallback(async () => {
         setLoading(true);
         setErrorMessage(null);
-        const { data, error } = await supabase
-            .from('generations')
-            .select('id, prompt, output_text, created_at')
-            .order('created_at', { ascending: false })
-            .limit(LOG_LIMIT);
-        if (error) {
-            setErrorMessage(`Could not load generation audit logs: ${error.message}`);
-        } else {
+        try {
+            const { data, error } = await supabase
+                .from('generations')
+                .select('id, prompt, output_text, created_at')
+                .order('created_at', { ascending: false })
+                .limit(LOG_LIMIT);
+            if (error) throw error;
             setLogs((data ?? []) as GenerationLog[]);
+        } catch (error) {
+            console.error('Could not load generation audit logs:', error);
+            setErrorMessage(
+                `Could not load generation audit logs: ${error instanceof Error ? error.message : String(error)}`,
+            );
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
-    }, []);
+    }, [supabase]);
 
     useEffect(() => {
         void Promise.resolve().then(load);
