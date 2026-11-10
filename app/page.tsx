@@ -387,9 +387,12 @@ export default function Home() {
     } | null>(null);
     const [tone, setTone] = useState<ToneType>('gentle');
     const [loading, setLoading] = useState(false);
+    const [isGenerating, setIsGenerating] = useState(false);
+    const generationInProgress = useRef(false);
     const [downloadingCard, setDownloadingCard] = useState<string | null>(null);
     const [currentUser, setCurrentUser] = useState<User | null>(null);
     const [toastMessage, setToastMessage] = useState<string | null>(null);
+    const [generationError, setGenerationError] = useState<string | null>(null);
     const generationIdsKey = generations.map((generation) => generation.id).join(',');
     const ownGenerationIdsKey = currentUser
         ? generations
@@ -883,6 +886,7 @@ export default function Home() {
 
     const handleGenerate = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
+        if (generationInProgress.current) return;
         if (!prompt.trim() || !time || !location.trim() || location.trim().length < 2) return;
 
         if (!currentUser) {
@@ -890,6 +894,9 @@ export default function Home() {
             return;
         }
 
+        generationInProgress.current = true;
+        setIsGenerating(true);
+        setGenerationError(null);
         const uploadedImage = vibeImage;
         const uploadedStickerPosition = uploadedImage ? { ...stickerPosition } : undefined;
         setLoading(true);
@@ -975,10 +982,16 @@ export default function Home() {
             }
         } catch (error) {
             console.error('Reflection generation failed:', error);
-            showToast('We could not create your reflection just now. Please try again shortly.');
+            const message = error instanceof Error
+                ? error.message
+                : 'We could not create your reflection just now. Please try again shortly.';
+            setGenerationError(message);
+            showToast(message);
         } finally {
             await minimumLoadingTime;
             setLoading(false);
+            setIsGenerating(false);
+            generationInProgress.current = false;
         }
     };
 
@@ -2037,12 +2050,21 @@ export default function Home() {
                         </fieldset>
                     </div>
 
+                    {generationError && (
+                        <p
+                            role="alert"
+                            className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm leading-relaxed text-rose-800 dark:border-rose-900 dark:bg-rose-950/50 dark:text-rose-200"
+                        >
+                            {generationError}
+                        </p>
+                    )}
+
                     <button
                         type="submit"
-                        disabled={loading || !prompt.trim() || !time || location.trim().length < 2}
+                        disabled={isGenerating || !prompt.trim() || !time || location.trim().length < 2}
                         className="mt-6 w-full rounded-xl bg-[#4E816A] px-6 py-3 font-semibold text-white shadow-sm transition-colors duration-200 hover:bg-[#3D6E58] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-400 dark:text-stone-950 dark:hover:bg-emerald-300"
                     >
-                        {loading ? 'Reframing...' : 'Find some perspective'}
+                        {isGenerating ? 'Generating...' : 'Find some perspective'}
                     </button>
                 </form>
             </section>

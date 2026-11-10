@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import {
+    DEFAULT_GENERATION_MODEL,
+    GENERATION_MODELS,
+    parseGenerationModelId,
+    type GenerationModelId,
+} from '@/lib/generation-models';
 
 interface AccessEntry {
     id: string;
@@ -16,6 +22,10 @@ export default function AccessControlManager() {
     const [email, setEmail] = useState('');
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
+    const [activeModel, setActiveModel] = useState<GenerationModelId>(DEFAULT_GENERATION_MODEL);
+    const [modelLoading, setModelLoading] = useState(true);
+    const [modelSaving, setModelSaving] = useState(false);
+    const [modelLoadError, setModelLoadError] = useState<string | null>(null);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
 
@@ -39,6 +49,59 @@ export default function AccessControlManager() {
     useEffect(() => {
         void Promise.resolve().then(load);
     }, [load]);
+
+    useEffect(() => {
+        let active = true;
+        fetch('/api/admin/generation-model', { cache: 'no-store' })
+            .then(async (response) => {
+                const result: { model?: unknown; error?: string } = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Could not load active generation model.');
+                const model = parseGenerationModelId(result.model);
+                if (!model) throw new Error('Active generation model response was invalid.');
+                if (active) {
+                    setActiveModel(model);
+                    setModelLoadError(null);
+                }
+            })
+            .catch((error: unknown) => {
+                console.error('Could not load active generation model:', error);
+                if (active) {
+                    const message = error instanceof Error ? error.message : 'Could not load active generation model.';
+                    setModelLoadError(message);
+                }
+            })
+            .finally(() => {
+                if (active) setModelLoading(false);
+            });
+        return () => {
+            active = false;
+        };
+    }, []);
+
+    const saveActiveModel = async (model: GenerationModelId) => {
+        setModelSaving(true);
+        setErrorMessage(null);
+        setNotice(null);
+        try {
+            const response = await fetch('/api/admin/generation-model', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model }),
+            });
+            const result: { model?: unknown; error?: string } = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Could not save active generation model.');
+            const savedModel = parseGenerationModelId(result.model);
+            if (!savedModel) throw new Error('Saved model response was invalid.');
+            setActiveModel(savedModel);
+            setModelLoadError(null);
+            setNotice(`Active generation model set to ${savedModel}.`);
+        } catch (error) {
+            console.error('Could not save active generation model:', error);
+            setErrorMessage(error instanceof Error ? error.message : 'Could not save active generation model.');
+        } finally {
+            setModelSaving(false);
+        }
+    };
 
     const addEntry = async (event: FormEvent<HTMLFormElement>, type: 'domain' | 'email') => {
         event.preventDefault();
@@ -81,6 +144,46 @@ export default function AccessControlManager() {
         <section>
             <Heading title="Access Control" description="Control which email domains and individual addresses can sign up." />
             <Feedback error={errorMessage} notice={notice} />
+            <article className={`${panelClass} mb-6`}>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <h3 className="font-semibold text-slate-800">Generation model</h3>
+                        <p className="mt-1 text-sm text-slate-600">Choose the Gemini model used by each step of the reflection pipeline.</p>
+                    </div>
+                    <label className="flex w-full max-w-sm items-center gap-3">
+                        <span className="sr-only">Active generation model</span>
+                        <select
+                            aria-label="Active generation model"
+                            value={activeModel}
+                            onChange={(event) => {
+                                const model = event.target.value;
+                                const parsedModel = parseGenerationModelId(model);
+                                if (parsedModel) void saveActiveModel(parsedModel);
+                            }}
+                            disabled={modelLoading || modelSaving}
+                            className={`${inputClass} disabled:opacity-60`}
+                        >
+                            {GENERATION_MODELS.map((model) => (
+                                <option key={model.id} value={model.id}>{model.label} · {model.id}</option>
+                            ))}
+                        </select>
+                        {modelSaving && <span className="shrink-0 text-xs text-slate-500">Saving…</span>}
+                    </label>
+                </div>
+                {modelLoadError && (
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#f2d8dc] bg-[#fbf0f1] px-4 py-3">
+                        <p className="text-sm text-[#9f4f59]">{modelLoadError}</p>
+                        <button
+                            type="button"
+                            onClick={() => void saveActiveModel(DEFAULT_GENERATION_MODEL)}
+                            disabled={modelLoading || modelSaving}
+                            className="rounded-lg border border-[#e6bfc4] bg-white px-3 py-2 text-sm font-semibold text-[#9f4f59] hover:bg-[#fff8f8] disabled:opacity-60"
+                        >
+                            Use verified model
+                        </button>
+                    </div>
+                )}
+            </article>
             {loading ? <Loading /> : (
                 <div className="grid gap-6 lg:grid-cols-2">
                     <EntryPanel

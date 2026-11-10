@@ -2,11 +2,10 @@
 
 import { useState } from 'react';
 import AdminMediaManagement from '../AdminMediaManagement';
+import OverviewDashboard from './OverviewDashboard';
 import AccessControlManager from './AccessControlManager';
-import LLMManager from './LLMManager';
 import LLMLogsViewer from './LLMLogsViewer';
 import AdminPromptChains from './AdminPromptChains';
-import TermsAndExamples from './TermsAndExamples';
 
 export interface AdminProfile {
     id: string;
@@ -20,18 +19,17 @@ interface AdminDashboardTabsProps {
 }
 
 const tabs = [
+    'Overview',
     'Access Control',
-    'LLM & Models',
     'Prompt Chains',
-    'Terms & Examples',
     'LLM Logs',
-    'Media & Users',
+    'Media & Posts',
 ] as const;
 
 type AdminTab = (typeof tabs)[number];
 
 export default function AdminDashboardTabs({ userId, profiles }: AdminDashboardTabsProps) {
-    const [activeTab, setActiveTab] = useState<AdminTab>('Access Control');
+    const [activeTab, setActiveTab] = useState<AdminTab>('Overview');
 
     return (
         <>
@@ -57,16 +55,12 @@ export default function AdminDashboardTabs({ userId, profiles }: AdminDashboardT
             </nav>
 
             <div role="tabpanel" className="min-h-96 rounded-b-2xl border-x border-b border-[#d7ded6] bg-white p-4 shadow-[0_4px_20px_-4px_rgba(40,60,50,0.06)] sm:p-6">
-                {activeTab === 'Access Control' && <AccessControlManager />}
-                {activeTab === 'LLM & Models' && <LLMManager />}
-                {activeTab === 'Prompt Chains' && <AdminPromptChains />}
-                {activeTab === 'Terms & Examples' && <TermsAndExamples />}
-                {activeTab === 'LLM Logs' && <LLMLogsViewer />}
-                {activeTab === 'Media & Users' && (
+                {activeTab === 'Overview' && <OverviewDashboard />}
+                {activeTab === 'Access Control' && (
                     <div className="space-y-12">
-                        <AdminMediaManagement userId={userId} />
+                        <AccessControlManager />
                         <section aria-labelledby="users-heading">
-                            <SectionHeading id="users-heading" title="User Management" description="Accounts and Admin Panel access." />
+                            <SectionHeading id="users-heading" title="User Management" description="Review account roles and Admin Panel access." />
                             <div className="overflow-x-auto rounded-2xl border border-[#d7ded6] bg-white shadow-[0_4px_20px_-4px_rgba(40,60,50,0.06)]">
                                 <table className="w-full min-w-[28rem] text-left text-sm">
                                     <thead className="border-b border-[#d4ded4] bg-[#ebf0eb] text-xs font-semibold uppercase tracking-wide text-[#3e5649]">
@@ -89,12 +83,22 @@ export default function AdminDashboardTabs({ userId, profiles }: AdminDashboardT
                                                 </td>
                                             </tr>
                                         ))}
+                                        {profiles.length === 0 && (
+                                            <tr>
+                                                <td colSpan={2} className="px-5 py-6 text-center text-slate-500">
+                                                    No user profiles found.
+                                                </td>
+                                            </tr>
+                                        )}
                                     </tbody>
                                 </table>
                             </div>
                         </section>
                     </div>
                 )}
+                {activeTab === 'Prompt Chains' && <AdminPromptChains />}
+                {activeTab === 'LLM Logs' && <LLMLogsViewer />}
+                {activeTab === 'Media & Posts' && <AdminMediaManagement userId={userId} />}
             </div>
         </>
     );

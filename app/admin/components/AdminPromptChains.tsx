@@ -14,12 +14,24 @@ interface PromptChainStep {
     id: string;
     prompt_chain_id: string;
     step_number: number;
+    name?: string | null;
     system_instruction?: string | null;
     prompt_template?: string | null;
     temperature?: number | null;
     max_tokens?: number | null;
-    model_id?: string | null;
     [key: string]: unknown;
+}
+
+interface PromptStepLog {
+    id: string;
+    status: 'succeeded' | 'failed' | 'skipped';
+    configured_model: string;
+    model: string;
+    input_text: string;
+    output_text: string | null;
+    error_message: string | null;
+    duration_ms: number | null;
+    created_at: string;
 }
 
 interface PromptChainMix {
@@ -31,26 +43,11 @@ interface PromptChainMix {
     [key: string]: unknown;
 }
 
-interface Model {
-    id: string;
-    model_name: string;
-    model_identifier: string;
-    provider_id?: string;
-}
-
-const DEFAULT_MODELS: Model[] = [
-    { id: 'gpt-4o-mini', model_name: 'OpenAI GPT-4o Mini', model_identifier: 'gpt-4o-mini' },
-    { id: 'gpt-4o', model_name: 'OpenAI GPT-4o', model_identifier: 'gpt-4o' },
-    { id: 'claude-3-5-sonnet', model_name: 'Anthropic Claude 3.5 Sonnet', model_identifier: 'claude-3-5-sonnet-20241022' },
-    { id: 'gemini-1.5-flash', model_name: 'Google Gemini 1.5 Flash', model_identifier: 'gemini-1.5-flash' },
-];
-
 interface StepDraft {
     systemInstruction: string;
     promptTemplate: string;
     temperature: number;
     maxTokens: number;
-    modelId: string;
 }
 
 const EMPTY_STEP: StepDraft = {
@@ -58,7 +55,6 @@ const EMPTY_STEP: StepDraft = {
     promptTemplate: '',
     temperature: 0.7,
     maxTokens: 250,
-    modelId: 'gpt-4o-mini',
 };
 
 const inputClass = 'w-full rounded-lg border border-[#cfd7cf] bg-[#fcfdfc] px-3 py-2 text-sm text-[#2c3e35] placeholder:text-[#9ea8a0] focus:border-[#6b8f78] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#6b8f78]/20';
@@ -70,7 +66,6 @@ export default function AdminPromptChains() {
     const [chains, setChains] = useState<PromptChain[]>([]);
     const [steps, setSteps] = useState<PromptChainStep[]>([]);
     const [mixes, setMixes] = useState<PromptChainMix[]>([]);
-    const [models, setModels] = useState<Model[]>(DEFAULT_MODELS);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
     const [savingId, setSavingId] = useState<string | null>(null);
@@ -83,16 +78,18 @@ export default function AdminPromptChains() {
     const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
     const [addStepChainId, setAddStepChainId] = useState<string | null>(null);
     const [newStep, setNewStep] = useState<StepDraft>(EMPTY_STEP);
+    const [viewingStepId, setViewingStepId] = useState<string | null>(null);
+    const [stepLogs, setStepLogs] = useState<PromptStepLog[]>([]);
+    const [logsLoading, setLogsLoading] = useState(false);
 
     const load = useCallback(async () => {
         setLoading(true);
         setErrorMessage(null);
         try {
-            const [chainResult, stepResult, mixResult, modelResult] = await Promise.all([
+            const [chainResult, stepResult, mixResult] = await Promise.all([
                 supabase.from('prompt_chains').select('*').order('name'),
                 supabase.from('prompt_chain_steps').select('*').order('step_number'),
                 supabase.from('prompt_chain_mix').select('*').order('id'),
-                supabase.from('llm_models').select('id, model_name, model_identifier, provider_id').order('model_name'),
             ]);
 
             const coreError = chainResult.error ?? stepResult.error ?? mixResult.error;
@@ -103,15 +100,9 @@ export default function AdminPromptChains() {
             setChains((chainResult.data ?? []) as PromptChain[]);
             setSteps((stepResult.data ?? []) as PromptChainStep[]);
             setMixes((mixResult.data ?? []) as PromptChainMix[]);
-
-            if (!modelResult.error && modelResult.data && modelResult.data.length > 0) {
-                setModels(modelResult.data as Model[]);
-            } else {
-                setModels(DEFAULT_MODELS);
-            }
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Could not load prompt chain configuration:', error);
-            setErrorMessage(error?.message || 'Prompt chain configuration could not be loaded.');
+            setErrorMessage(getErrorMessage(error, 'Prompt chain configuration could not be loaded.'));
         } finally {
             setLoading(false);
         }
@@ -185,9 +176,9 @@ export default function AdminPromptChains() {
             resetCreateForm();
             setExpandedIds((current) => new Set(current).add(chainId));
             await load();
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('完整捕获到的报错详情:', error);
-            setErrorMessage(error?.message || 'Prompt chain could not be created.');
+            setErrorMessage(getErrorMessage(error, 'Prompt chain could not be created.'));
         } finally {
             setBusy(false);
         }
@@ -213,9 +204,9 @@ export default function AdminPromptChains() {
             setAddStepChainId(null);
             setNewStep(EMPTY_STEP);
             await load();
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Could not add prompt chain step:', error);
-            setErrorMessage(error?.message || 'The prompt chain step could not be added.');
+            setErrorMessage(getErrorMessage(error, 'The prompt chain step could not be added.'));
         } finally {
             setBusy(false);
         }
@@ -255,9 +246,9 @@ export default function AdminPromptChains() {
             }
             setNotice(`Step ${step.step_number} deleted.`);
             await load();
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Could not delete prompt chain step:', error);
-            setErrorMessage(error?.message || 'The prompt chain step could not be deleted.');
+            setErrorMessage(getErrorMessage(error, 'The prompt chain step could not be deleted.'));
         } finally {
             setBusy(false);
         }
@@ -276,9 +267,9 @@ export default function AdminPromptChains() {
             if (error) throw error;
             setNotice(`${chainName(chainId)} added to routing mix with weight 50.`);
             await load();
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Could not add prompt chain to routing mix:', error);
-            setErrorMessage(error?.message || 'Prompt chain could not be added to the routing mix.');
+            setErrorMessage(getErrorMessage(error, 'Prompt chain could not be added to the routing mix.'));
         } finally {
             setSavingId(null);
         }
@@ -296,11 +287,39 @@ export default function AdminPromptChains() {
             if (error) throw error;
             setNotice('Prompt chain routing updated.');
             await load();
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Could not update routing configuration:', error);
-            setErrorMessage(error?.message || 'Routing configuration could not be updated.');
+            setErrorMessage(getErrorMessage(error, 'Routing configuration could not be updated.'));
         } finally {
             setSavingId(null);
+        }
+    };
+
+    const viewStepLogs = async (step: PromptChainStep) => {
+        if (viewingStepId === step.id) {
+            setViewingStepId(null);
+            setStepLogs([]);
+            return;
+        }
+
+        setViewingStepId(step.id);
+        setStepLogs([]);
+        setLogsLoading(true);
+        setErrorMessage(null);
+        try {
+            const { data, error } = await supabase
+                .from('llm_logs')
+                .select('id, status, configured_model, model, input_text, output_text, error_message, duration_ms, created_at')
+                .eq('step_id', step.id)
+                .order('created_at', { ascending: false })
+                .limit(20);
+            if (error) throw error;
+            setStepLogs((data ?? []) as PromptStepLog[]);
+        } catch (error) {
+            console.error('Could not load prompt step logs:', error);
+            setErrorMessage(error instanceof Error ? error.message : 'Step execution logs could not be loaded.');
+        } finally {
+            setLogsLoading(false);
         }
     };
 
@@ -350,7 +369,7 @@ export default function AdminPromptChains() {
                     </div>
                     <div className="mt-5 rounded-xl border border-[#e7ece7] bg-[#fafbfa] p-4">
                         <h4 className="mb-4 text-sm font-semibold text-[#3d614e]">Initial step</h4>
-                        <StepFields draft={initialStep} onChange={setInitialStep} models={models} />
+                        <StepFields draft={initialStep} onChange={setInitialStep} />
                     </div>
                     <div className="mt-5 flex justify-end">
                         <button type="submit" disabled={busy} className={primaryButtonClass}>
@@ -377,6 +396,9 @@ export default function AdminPromptChains() {
                                             <h3 className="font-semibold text-slate-800">{chain.name ?? `Prompt chain ${chain.id}`}</h3>
                                             {chain.description && <p className="mt-1 text-sm text-slate-600">{chain.description}</p>}
                                         </div>
+                                        <span className="shrink-0 rounded-full border border-[#d7ded6] bg-[#f4f7f4] px-2.5 py-1 text-xs font-semibold text-[#3d614e]">
+                                            {chainSteps.length} {chainSteps.length === 1 ? 'step' : 'steps'}
+                                        </span>
                                         <button
                                             type="button"
                                             aria-expanded={isExpanded}
@@ -399,23 +421,76 @@ export default function AdminPromptChains() {
                                                     <li key={step.id} className="text-sm text-slate-700">
                                                         <div className="flex items-start justify-between gap-3">
                                                             <span className="font-semibold text-[#385e49]">Step {step.step_number}</span>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => void deleteStep(step)}
-                                                                disabled={busy || chainSteps.length <= 1}
-                                                                title={chainSteps.length <= 1 ? 'A chain must keep at least one step.' : 'Delete this step'}
-                                                                className="rounded-md bg-[#f3dede] px-2 py-1 text-xs font-semibold text-[#a84f55] transition hover:bg-[#ebcccc] disabled:cursor-not-allowed disabled:opacity-50"
-                                                            >
-                                                                Remove
-                                                            </button>
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void viewStepLogs(step)}
+                                                                    disabled={logsLoading && viewingStepId !== step.id}
+                                                                    className="rounded-md border border-[#c5d4c8] bg-white px-2 py-1 text-xs font-semibold text-[#3d614e] transition hover:bg-[#f4f7f4] disabled:opacity-50"
+                                                                >
+                                                                    {viewingStepId === step.id ? 'Hide Logs' : 'View Logs'}
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void deleteStep(step)}
+                                                                    disabled={busy || chainSteps.length <= 1}
+                                                                    title={chainSteps.length <= 1 ? 'A chain must keep at least one step.' : 'Delete this step'}
+                                                                    className="rounded-md bg-[#f3dede] px-2 py-1 text-xs font-semibold text-[#a84f55] transition hover:bg-[#ebcccc] disabled:cursor-not-allowed disabled:opacity-50"
+                                                                >
+                                                                    Remove
+                                                                </button>
+                                                            </div>
                                                         </div>
+                                                        {step.name && <p className="mt-1 font-medium text-slate-800">{step.name}</p>}
                                                         <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
                                                             <StepDetail label="System instruction" value={step.system_instruction} />
                                                             <StepDetail label="Prompt template" value={step.prompt_template} />
                                                             <StepDetail label="Temperature" value={step.temperature} />
-                                                            <StepDetail label="Max tokens" value={step.max_tokens} />
-                                                            <StepDetail label="Model" value={modelLabel(models, step.model_id)} />
+                                                            <StepDetail
+                                                                label={step.step_number === chainSteps.length ? 'Configured max tokens (final uses at least 8192)' : 'Max tokens'}
+                                                                value={step.max_tokens}
+                                                            />
+                                                            <StepDetail label="Generation model" value="Set in Access Control; applies to every step" />
                                                         </dl>
+                                                        {viewingStepId === step.id && (
+                                                            <div className="mt-3 rounded-xl border border-[#d7ded6] bg-[#fafbfa] p-3">
+                                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#3e5649]">Recent executions</h4>
+                                                                {logsLoading ? (
+                                                                    <p className="text-xs text-slate-500">Loading step logs…</p>
+                                                                ) : stepLogs.length === 0 ? (
+                                                                    <p className="text-xs text-slate-500">No executions recorded for this step yet.</p>
+                                                                ) : (
+                                                                    <ol className="space-y-3">
+                                                                        {stepLogs.map((log) => (
+                                                                            <li key={log.id} className="rounded-lg border border-[#e7e1dc] bg-white p-3 text-xs">
+                                                                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                                    <span className={`rounded-full px-2 py-0.5 font-semibold ${
+                                                                                        log.status === 'succeeded'
+                                                                                            ? 'bg-emerald-50 text-emerald-700'
+                                                                                            : log.status === 'failed'
+                                                                                                ? 'bg-rose-50 text-rose-700'
+                                                                                                : 'bg-amber-50 text-amber-700'
+                                                                                    }`}>
+                                                                                        {log.status}
+                                                                                    </span>
+                                                                                    <span className="font-mono text-slate-500">
+                                                                                        Configured: {log.configured_model} · Attempted: {log.model}
+                                                                                    </span>
+                                                                                    <time className="text-slate-500" dateTime={log.created_at}>{new Date(log.created_at).toLocaleString()}</time>
+                                                                                    {log.duration_ms !== null && <span className="text-slate-500">{log.duration_ms} ms</span>}
+                                                                                </div>
+                                                                                {log.error_message && <p className="mt-2 whitespace-pre-wrap break-words text-rose-700">{log.error_message}</p>}
+                                                                                <details className="mt-2">
+                                                                                    <summary className="cursor-pointer font-semibold text-[#3d614e]">Input and output</summary>
+                                                                                    <p className="mt-2 whitespace-pre-wrap break-words text-slate-600"><strong>Input:</strong> {log.input_text}</p>
+                                                                                    {log.output_text && <p className="mt-2 whitespace-pre-wrap break-words text-slate-600"><strong>Output:</strong> {log.output_text}</p>}
+                                                                                </details>
+                                                                            </li>
+                                                                        ))}
+                                                                    </ol>
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </li>
                                                 ))}
                                                 {chainSteps.length === 0 && <li className="text-xs text-slate-500">No steps configured.</li>}
@@ -424,7 +499,7 @@ export default function AdminPromptChains() {
                                             {addStepChainId === chain.id ? (
                                                 <form onSubmit={(event) => void addStep(event, chain.id)} className="mt-5 rounded-xl border border-[#e7ece7] bg-[#fafbfa] p-4">
                                                     <h4 className="mb-4 text-sm font-semibold text-[#3d614e]">Add step {chainSteps.length + 1}</h4>
-                                                    <StepFields draft={newStep} onChange={setNewStep} models={models} />
+                                                    <StepFields draft={newStep} onChange={setNewStep} />
                                                     <div className="mt-4 flex justify-end gap-2">
                                                         <button type="button" onClick={() => setAddStepChainId(null)} disabled={busy} className="rounded-lg border border-[#c5d4c8] px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-white">Cancel</button>
                                                         <button type="submit" disabled={busy} className={primaryButtonClass}>{busy ? 'Adding…' : 'Add step'}</button>
@@ -545,7 +620,6 @@ function createStepPayload(chainId: string, stepNumber: number, draft: StepDraft
         prompt_template: draft.promptTemplate.trim(),
         temperature: draft.temperature,
         max_tokens: draft.maxTokens,
-        model_id: draft.modelId || null,
     };
 }
 
@@ -558,12 +632,6 @@ function weightColumnFor(mix: PromptChainMix): 'weight' | 'routing_weight' {
     return 'routing_weight' in mix && !('weight' in mix) ? 'routing_weight' : 'weight';
 }
 
-function modelLabel(models: Model[], modelId: string | null | undefined): string {
-    if (!modelId) return 'Not selected';
-    const model = models.find((item) => item.id === modelId || item.model_identifier === modelId);
-    return model ? `${model.model_name} (${model.model_identifier})` : modelId;
-}
-
 function formatValue(value: unknown): string {
     if (typeof value === 'string') return value;
     if (value === null || value === undefined) return '—';
@@ -571,7 +639,16 @@ function formatValue(value: unknown): string {
     return String(value);
 }
 
-function StepFields({ draft, onChange, models }: { draft: StepDraft; onChange: (draft: StepDraft) => void; models: Model[] }) {
+function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+        const message = error.message;
+        if (typeof message === 'string' && message.trim()) return message;
+    }
+    return fallback;
+}
+
+function StepFields({ draft, onChange }: { draft: StepDraft; onChange: (draft: StepDraft) => void }) {
     return (
         <div className="grid gap-4 md:grid-cols-2">
             <label className="block md:col-span-2">
@@ -620,19 +697,9 @@ function StepFields({ draft, onChange, models }: { draft: StepDraft; onChange: (
                     className={inputClass}
                 />
             </label>
-            <label className="block md:col-span-2">
-                <span className={labelClass}>Model</span>
-                <select
-                    value={draft.modelId}
-                    onChange={(event) => onChange({ ...draft, modelId: event.target.value })}
-                    className={inputClass}
-                >
-                    <option value="">No model selected</option>
-                    {models.map((model) => (
-                        <option key={model.id} value={model.id}>{model.model_name} · {model.model_identifier}</option>
-                    ))}
-                </select>
-            </label>
+            <p className="text-xs text-slate-500 md:col-span-2">
+                Every step uses the active generation model selected in Access Control. The final step uses a JSON response schema and at least 8,192 output tokens.
+            </p>
         </div>
     );
 }
