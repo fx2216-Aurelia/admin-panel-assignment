@@ -81,6 +81,7 @@ export default function AdminPromptChains() {
     const [viewingStepId, setViewingStepId] = useState<string | null>(null);
     const [stepLogs, setStepLogs] = useState<PromptStepLog[]>([]);
     const [logsLoading, setLogsLoading] = useState(false);
+    const [weightDrafts, setWeightDrafts] = useState<Record<string, string>>({});
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -100,6 +101,7 @@ export default function AdminPromptChains() {
             setChains((chainResult.data ?? []) as PromptChain[]);
             setSteps((stepResult.data ?? []) as PromptChainStep[]);
             setMixes((mixResult.data ?? []) as PromptChainMix[]);
+            setWeightDrafts({});
         } catch (error: unknown) {
             console.error('Could not load prompt chain configuration:', error);
             setErrorMessage(getErrorMessage(error, 'Prompt chain configuration could not be loaded.'));
@@ -307,17 +309,17 @@ export default function AdminPromptChains() {
         setLogsLoading(true);
         setErrorMessage(null);
         try {
-            const { data, error } = await supabase
-                .from('llm_logs')
-                .select('id, status, configured_model, model, input_text, output_text, error_message, duration_ms, created_at')
-                .eq('step_id', step.id)
-                .order('created_at', { ascending: false })
-                .limit(20);
-            if (error) throw error;
-            setStepLogs((data ?? []) as PromptStepLog[]);
+            const response = await fetch(`/api/admin/prompt-chains/steps/${step.id}/logs`);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+                throw new Error(errorData.error || `Failed to fetch logs: HTTP ${response.status}`);
+            }
+            const { logs } = await response.json();
+            setStepLogs((logs ?? []) as PromptStepLog[]);
         } catch (error) {
-            console.error('Could not load prompt step logs:', error);
-            setErrorMessage(error instanceof Error ? error.message : 'Step execution logs could not be loaded.');
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Could not load prompt step logs:', errorMessage);
+            setErrorMessage(errorMessage || 'Step execution logs could not be loaded.');
         } finally {
             setLogsLoading(false);
         }
@@ -548,14 +550,13 @@ export default function AdminPromptChains() {
                                             <td className="px-3 py-3">
                                                 <input
                                                     aria-label={`Routing weight for ${chainName(mix.prompt_chain_id)}`}
-                                                    type="number"
-                                                    step="any"
-                                                    value={weight}
+                                                    type="text"
+                                                    inputMode="numeric"
+                                                    autoComplete="off"
+                                                    value={weightDrafts[mix.id] ?? String(weight)}
                                                     onChange={(event) => {
-                                                        const parsed = Number(event.target.value);
-                                                        setMixes((current) => current.map((entry) => entry.id === mix.id
-                                                            ? { ...entry, ...(weightColumnFor(entry) === 'weight' ? { weight: parsed } : { routing_weight: parsed }) }
-                                                            : entry));
+                                                        const draft = event.target.value;
+                                                        setWeightDrafts((current) => ({ ...current, [mix.id]: draft }));
                                                     }}
                                                     className={inputClass}
                                                 />
@@ -574,11 +575,13 @@ export default function AdminPromptChains() {
                                                     type="button"
                                                     disabled={savingId === mix.id}
                                                     onClick={() => {
-                                                        if (!Number.isFinite(weight)) {
-                                                            setErrorMessage('Enter a valid routing weight.');
+                                                        const parsedWeight = parseWeightDraft(weightDrafts[mix.id] ?? String(weight));
+                                                        if (parsedWeight === null) {
+                                                            setNotice(null);
+                                                            setErrorMessage('Routing weight must be a non-negative whole number (e.g. 0, 50, 100).');
                                                             return;
                                                         }
-                                                        void updateMix(mix, { weight, is_active: mix.is_active ?? false });
+                                                        void updateMix(mix, { weight: parsedWeight, is_active: mix.is_active ?? false });
                                                     }}
                                                     className={secondaryButtonClass}
                                                 >
@@ -626,6 +629,13 @@ function createStepPayload(chainId: string, stepNumber: number, draft: StepDraft
 function getWeightColumn(mixes: PromptChainMix[]): 'weight' | 'routing_weight' {
     if (mixes.some((mix) => 'routing_weight' in mix && !('weight' in mix))) return 'routing_weight';
     return 'weight';
+}
+
+function parseWeightDraft(draft: string): number | null {
+    const trimmed = draft.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const value = Number(trimmed);
+    return Number.isSafeInteger(value) ? value : null;
 }
 
 function weightColumnFor(mix: PromptChainMix): 'weight' | 'routing_weight' {

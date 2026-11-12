@@ -20,6 +20,45 @@ const RETRYABLE_TRANSIENT_PROVIDER_STATUSES = new Set([500, 502, 503, 504]);
 const FINAL_STEP_MIN_OUTPUT_TOKENS = 8192;
 const FALLBACK_TEXT_MODEL = 'local-fallback';
 const DEFAULT_PROMPT_CHAIN = 'Personalized Cognitive Reframing Assistant';
+
+// Step 1: Analyze Input - Extract emotional state and triggers
+const STEP1_ANALYSIS_SCHEMA: ResponseSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+        stress_level: { type: SchemaType.INTEGER },
+        primary_emotion: { type: SchemaType.STRING },
+        emotional_triggers: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.STRING },
+        },
+        core_distortions: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.STRING },
+        },
+        analysis: { type: SchemaType.STRING },
+    },
+    required: ['stress_level', 'primary_emotion', 'emotional_triggers', 'core_distortions', 'analysis'],
+};
+
+// Step 2: Draft Reframing - Generate stoic cognitive reframe with supporting quote
+const STEP2_REFRAMING_SCHEMA: ResponseSchema = {
+    type: SchemaType.OBJECT,
+    properties: {
+        stoic_reframing: { type: SchemaType.STRING },
+        quote: {
+            type: SchemaType.OBJECT,
+            properties: {
+                text: { type: SchemaType.STRING },
+                source: { type: SchemaType.STRING },
+            },
+            required: ['text', 'source'],
+        },
+        key_insight: { type: SchemaType.STRING },
+    },
+    required: ['stoic_reframing', 'quote', 'key_insight'],
+};
+
+// Step 3: Format & Constraints - Final structured response with all required fields
 const FINAL_RESPONSE_SCHEMA: ResponseSchema = {
     type: SchemaType.OBJECT,
     properties: {
@@ -249,43 +288,72 @@ async function executePromptChain(
         }
         return { content: null, modelUsed: FALLBACK_TEXT_MODEL };
     }
+
     const genAI = new GoogleGenerativeAI(apiKey);
-    const previousOutputs: string[] = [];
+    const stepOutputs: Record<number, Record<string, unknown>> = {};
     let finalContent: GeneratedContent | null = null;
     let modelUsed = FALLBACK_TEXT_MODEL;
 
     for (const [index, rawStep] of (steps as PromptChainStep[]).entries()) {
         const step = rawStep;
+        const stepNumber = step.step_number;
+        const isFirstStep = index === 0;
+        const isFinalStep = index === steps.length - 1;
+
+        let responseSchema: ResponseSchema | undefined;
+        let responseMimeType = 'text/plain';
+        let minOutputTokens = step.max_tokens ?? 1000;
+
+        if (stepNumber === 1) {
+            responseSchema = STEP1_ANALYSIS_SCHEMA;
+            responseMimeType = 'application/json';
+            minOutputTokens = Math.max(minOutputTokens, 1000);
+        } else if (stepNumber === 2) {
+            responseSchema = STEP2_REFRAMING_SCHEMA;
+            responseMimeType = 'application/json';
+            minOutputTokens = Math.max(minOutputTokens, 1500);
+        } else if (isFinalStep) {
+            responseSchema = FINAL_RESPONSE_SCHEMA;
+            responseMimeType = 'application/json';
+            minOutputTokens = Math.max(minOutputTokens, FINAL_STEP_MIN_OUTPUT_TOKENS);
+        }
+
         const template = step.prompt_template?.trim() ?? '';
-        const renderedTemplate = template
+        let renderedTemplate = template
             .replaceAll('{{input}}', baseInput)
-            .replaceAll('{{previous_output}}', previousOutputs.at(-1) ?? '')
-            .replaceAll('{{previous_outputs}}', previousOutputs.join('\n\n'));
+            .replaceAll('{{previous_output}}', stepNumber > 1 ? JSON.stringify(stepOutputs[stepNumber - 1] ?? {}) : '')
+            .replaceAll('{{previous_outputs}}', Object.entries(stepOutputs)
+                .map(([key, val]) => `Step ${key} Output:\n${JSON.stringify(val, null, 2)}`)
+                .join('\n\n'));
+
         const stepInput = [
-            renderedTemplate || `Process this user context: ${baseInput}`,
-            ...(previousOutputs.length && !template.includes('{{previous_output') ? [
-                `Previous pipeline outputs:\n${previousOutputs.join('\n\n')}`,
-            ] : []),
-        ].join('\n\n');
+            renderedTemplate || (isFirstStep
+                ? `Analyze this user input and extract key emotional information: ${baseInput}`
+                : stepNumber === 2
+                    ? `Using the previous step's analysis, draft a compassionate stoic reframe:\n\nOriginal input: ${baseInput}\n\nPrevious analysis: ${JSON.stringify(stepOutputs[1] ?? {}, null, 2)}`
+                    : `Synthesize all previous outputs into the final response format:\n\nOriginal input: ${baseInput}\n\nAnalysis: ${JSON.stringify(stepOutputs[1] ?? {}, null, 2)}\n\nReframing: ${JSON.stringify(stepOutputs[2] ?? {}, null, 2)}`)
+        ].filter(Boolean).join('\n\n');
+
         const systemInstruction = [
             step.system_instruction?.trim(),
-            index === steps.length - 1 ? personaPrompt : null,
+            isFinalStep ? personaPrompt : null,
         ].filter((part): part is string => Boolean(part)).join('\n\n');
+
         const startedAt = Date.now();
         let output: string | null = null;
         let stepModel = '';
         let requestError: unknown = null;
         let attemptCount = 0;
         let finishReason: string | null = null;
+        let parsedOutput: Record<string, unknown> | null = null;
+
         const model = genAI.getGenerativeModel({
             model: normalizeGeminiModelName(activeModel),
             generationConfig: {
-                responseMimeType: index === steps.length - 1 ? 'application/json' : 'text/plain',
-                ...(index === steps.length - 1 ? { responseSchema: FINAL_RESPONSE_SCHEMA } : {}),
+                responseMimeType,
+                ...(responseSchema ? { responseSchema } : {}),
                 temperature: step.temperature ?? 0.7,
-                maxOutputTokens: index === steps.length - 1
-                    ? Math.max(step.max_tokens ?? 1000, FINAL_STEP_MIN_OUTPUT_TOKENS)
-                    : step.max_tokens ?? 1000,
+                maxOutputTokens: minOutputTokens,
             },
         });
 
@@ -299,6 +367,15 @@ async function executePromptChain(
                 output = result.response.text().trim();
                 finishReason = result.response.candidates?.[0]?.finishReason ?? null;
                 requestError = null;
+
+                if (responseMimeType === 'application/json') {
+                    try {
+                        parsedOutput = JSON.parse(output) as Record<string, unknown>;
+                    } catch (parseError) {
+                        throw new Error(`Step ${stepNumber} returned invalid JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+                    }
+                }
+
                 break;
             } catch (error) {
                 requestError = error;
@@ -313,7 +390,7 @@ async function executePromptChain(
                     event: 'Gemini generation retry scheduled',
                     configuredModel: activeModel,
                     attemptedModel: activeModel,
-                    stepNumber: step.step_number,
+                    stepNumber,
                     providerStatus: providerError.status,
                     providerErrorCode: providerError.code,
                     quotaMetric: providerError.quotaMetric,
@@ -327,9 +404,16 @@ async function executePromptChain(
 
         try {
             if (!output) {
-                throw requestError ?? new Error(`Step ${step.step_number} returned an empty response.`);
+                throw requestError ?? new Error(`Step ${stepNumber} returned an empty response.`);
             }
-            if (index === steps.length - 1) {
+
+            if (responseMimeType === 'application/json' && !parsedOutput) {
+                throw new Error(
+                    `Step ${stepNumber} did not produce valid JSON (finishReason=${finishReason ?? 'unknown'}, outputChars=${output.length}).`,
+                );
+            }
+
+            if (isFinalStep) {
                 finalContent = parseGeneratedContent(output);
                 if (!finalContent) {
                     throw new Error(
@@ -337,14 +421,19 @@ async function executePromptChain(
                     );
                 }
             }
+
             stepModel = activeModel;
+
+            if (parsedOutput && stepNumber < steps.length) {
+                stepOutputs[stepNumber] = parsedOutput;
+            }
         } catch (error) {
             requestError = error;
         }
 
         const durationMs = Date.now() - startedAt;
         if (!output || !stepModel) {
-            const providerError = getProviderErrorDetails(requestError ?? new Error(`Step ${step.step_number} failed.`));
+            const providerError = getProviderErrorDetails(requestError ?? new Error(`Step ${stepNumber} failed.`));
             const errorMessage = sanitizeProviderDiagnostic(providerError.message, apiKey, [
                 input.prompt,
                 input.location,
@@ -369,7 +458,7 @@ async function executePromptChain(
                 event: 'Gemini generation request failed',
                 configuredModel: activeModel,
                 attemptedModel,
-                stepNumber: step.step_number,
+                stepNumber,
                 providerHttpStatus: providerError.status,
                 providerErrorCode: providerError.code,
                 quotaMetric: providerError.quotaMetric,
@@ -381,20 +470,20 @@ async function executePromptChain(
                 diagnostic: errorMessage,
             }));
             const userMessage = providerError.status === 404
-                ? `The selected Gemini model "${activeModel}" is unavailable for this API key at pipeline step ${step.step_number}. Select a model verified for this project in Admin Dashboard → Access Control → Generation model.`
+                ? `The selected Gemini model "${activeModel}" is unavailable for this API key at pipeline step ${stepNumber}. Select a model verified for this project in Admin Dashboard → Access Control → Generation model.`
                 : providerError.status === 429
                     ? providerError.quotaMetric?.includes('generate_content_free_tier_requests')
-                        ? `Google reports the free-tier generation-request quota is exhausted at pipeline step ${step.step_number}. Check AI Studio → Rate limits for Gemini 3.6 Flash and this API key's project. If the model quota is 0, enable billing or select a model with available quota; if a daily limit was reached, wait until its reset${providerError.retryDelay ? ` (${providerError.retryDelay})` : ''}. This request was not retried automatically, and your entry is still here.`
-                        : `Google rate-limited the request at pipeline step ${step.step_number}. Check the project's Gemini quota and${providerError.retryDelay ? ` retry after ${providerError.retryDelay}` : ' wait for the displayed quota reset'}; this request was not retried automatically, and your entry is still here.`
+                        ? `Google reports the free-tier generation-request quota is exhausted at pipeline step ${stepNumber}. Check AI Studio → Rate limits for Gemini 3.6 Flash and this API key's project. If the model quota is 0, enable billing or select a model with available quota; if a daily limit was reached, wait until its reset${providerError.retryDelay ? ` (${providerError.retryDelay})` : ''}. This request was not retried automatically, and your entry is still here.`
+                        : `Google rate-limited the request at pipeline step ${stepNumber}. Check the project's Gemini quota and${providerError.retryDelay ? ` retry after ${providerError.retryDelay}` : ' wait for the displayed quota reset'}; this request was not retried automatically, and your entry is still here.`
                     : providerError.status !== null && RETRYABLE_TRANSIENT_PROVIDER_STATUSES.has(providerError.status)
-                        ? `Gemini is temporarily busy at pipeline step ${step.step_number} after ${attemptCount} attempts. Please try again shortly; your entry is still here.`
+                        ? `Gemini is temporarily busy at pipeline step ${stepNumber} after ${attemptCount} attempts. Please try again shortly; your entry is still here.`
                         : providerError.status === 401 || providerError.status === 403
                             ? `Gemini rejected the server credentials or access for the selected model. Ask an administrator to check the Gemini API key and project access.`
-                            : `Generation failed at pipeline step ${step.step_number}. Your entry is still here; please retry or contact an administrator if this continues.`;
+                            : `Generation failed at pipeline step ${stepNumber}. Your entry is still here; please retry or contact an administrator if this continues.`;
             throw new GenerationModelRequestError(userMessage, {
                 configuredModel: activeModel,
                 attemptedModel,
-                stepNumber: step.step_number,
+                stepNumber,
                 providerStatus: providerError.status,
                 providerRetryDelay: providerError.retryDelay,
                 diagnostic: errorMessage.slice(0, 500),
@@ -414,14 +503,12 @@ async function executePromptChain(
             errorMessage: null,
             durationMs,
         });
-        previousOutputs.push(output);
         modelUsed = stepModel;
     }
 
     if (!finalContent) throw new Error('The prompt chain did not produce a valid final response.');
     return { content: finalContent, modelUsed };
 }
-
 interface StickerPosition {
     x: number;
     y: number;
